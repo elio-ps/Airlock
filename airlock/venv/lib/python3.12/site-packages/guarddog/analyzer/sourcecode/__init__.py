@@ -1,0 +1,156 @@
+import os
+import re
+import pathlib
+from dataclasses import dataclass
+from typing import Optional, Iterable, List
+
+from guarddog.ecosystems import ECOSYSTEM
+
+current_dir = pathlib.Path(__file__).parent.resolve()
+
+EXTENSION_YARA_PREFIX = "extension_"
+
+# These data class aim to reduce the spreading of the logic
+# Instead of using the a dict as a structure and parse it difffently
+# depending on the type
+
+
+@dataclass
+class SourceCodeRule:
+    """
+    Base class for source code rules
+
+    Attributes:
+        id: Rule identifier
+        file: Rule filename
+        description: Human-readable description
+        ecosystem: Target ecosystem (None = any)
+        identifies: What this rule detects (e.g., "threat.network.outbound")
+        severity: Impact level (low/medium/high)
+        mitre_tactics: List of MITRE ATT&CK tactics
+        specificity: Pattern specificity - how specific to malware vs legitimate code (low/medium/high)
+        sophistication: Technique advancement (low/medium/high)
+        max_hits: Maximum number of risks to form from this rule per file (None = unlimited)
+    """
+
+    id: str
+    file: str
+    description: str
+    ecosystem: Optional[ECOSYSTEM]  # None means "any ecosystem"
+
+    # New risk-based metadata
+    identifies: Optional[str] = None
+    severity: Optional[str] = None
+    mitre_tactics: Optional[List[str]] = None
+    specificity: Optional[str] = None
+    sophistication: Optional[str] = None
+    max_hits: Optional[int] = (
+        None  # None = unlimited, capabilities typically 1, threats typically 5
+    )
+    path_include: Optional[str] = None  # Glob patterns: "*/package.json,*/setup.py"
+    path_exclude: Optional[str] = None  # Glob patterns: "*.min.js,dist/*"
+
+
+@dataclass
+class YaraRule(SourceCodeRule):
+    pass
+
+
+def get_sourcecode_rules(
+    ecosystem: ECOSYSTEM, kind: Optional[type] = None
+) -> Iterable[SourceCodeRule]:
+    """
+    This function returns the source code rules for a given ecosystem and kind.
+    Args:
+        ecosystem: The ecosystem to filter for if rules are ecosystem specific
+        kind: The kind of rule to filter for
+    """
+    for rule in SOURCECODE_RULES:
+        if kind and not isinstance(rule, kind):
+            continue
+        # Include rules that match the specific ecosystem OR rules that apply to any ecosystem (None)
+        if rule.ecosystem is not None and rule.ecosystem != ecosystem:
+            continue
+        yield rule
+
+
+SOURCECODE_RULES: list[SourceCodeRule] = list()
+
+yara_rule_file_names = list(
+    filter(lambda x: x.endswith("yar"), os.listdir(current_dir))
+)
+# all yar files placed in the sourcecode directory are loaded as YARA rules
+# refer to README.md for more information
+for file_name in yara_rule_file_names:
+    rule_id = pathlib.Path(file_name).stem
+
+    # Determine ecosystem based on filename prefix
+    rule_ecosystem: Optional[ECOSYSTEM] = (
+        ECOSYSTEM.EXTENSION if file_name.startswith(EXTENSION_YARA_PREFIX) else None
+    )
+
+    with open(os.path.join(current_dir, file_name), "r") as fd:
+        content = fd.read()
+
+        # Extract description
+        # rule_id uses hyphens but YARA rule names use underscores
+        yara_rule_name = rule_id.replace("-", "_")
+        description_match = re.search(
+            rf"\s*rule\s+{yara_rule_name}[^}}]+meta:[^}}]+description\s*=\s*\"(.+?)\"",
+            content,
+        )
+        rule_description = description_match.group(1) if description_match else ""
+
+        # Extract new risk-based metadata fields
+        identifies_match = re.search(r"identifies\s*=\s*\"(.+?)\"", content)
+        identifies = identifies_match.group(1) if identifies_match else None
+
+        severity_match = re.search(r"severity\s*=\s*\"(.+?)\"", content)
+        severity = severity_match.group(1) if severity_match else None
+
+        specificity_match = re.search(r"specificity\s*=\s*\"(.+?)\"", content)
+        specificity = specificity_match.group(1) if specificity_match else None
+
+        sophistication_match = re.search(r"sophistication\s*=\s*\"(.+?)\"", content)
+        sophistication = sophistication_match.group(1) if sophistication_match else None
+
+        # Extract MITRE tactics (comma-separated string format)
+        # For capabilities without tactics, default to empty list
+        mitre_tactics = []
+        tactics_match = re.search(r"mitre_tactics\s*=\s*\"(.+?)\"", content)
+        if tactics_match:
+            tactics_str = tactics_match.group(1)
+            # Parse comma-separated values
+            if tactics_str.strip():
+                mitre_tactics = [t.strip() for t in tactics_str.split(",") if t.strip()]
+
+        # Extract max_hits (integer or None)
+        max_hits = None
+        max_hits_match = re.search(r"max_hits\s*=\s*(\d+)", content)
+        if max_hits_match:
+            max_hits = int(max_hits_match.group(1))
+
+        # Extract path_include (glob patterns)
+        path_include_match = re.search(r"path_include\s*=\s*\"(.+?)\"", content)
+        path_include = path_include_match.group(1) if path_include_match else None
+
+        # Extract path_exclude (glob patterns)
+        path_exclude_match = re.search(r"path_exclude\s*=\s*\"(.+?)\"", content)
+        path_exclude = path_exclude_match.group(1) if path_exclude_match else None
+
+        SOURCECODE_RULES.append(
+            YaraRule(
+                id=rule_id,
+                file=file_name,
+                description=rule_description,
+                ecosystem=rule_ecosystem,
+                identifies=identifies,
+                severity=severity,
+                mitre_tactics=mitre_tactics,
+                specificity=specificity,
+                sophistication=sophistication,
+                max_hits=max_hits,
+                path_include=path_include,
+                path_exclude=path_exclude,
+            )
+        )

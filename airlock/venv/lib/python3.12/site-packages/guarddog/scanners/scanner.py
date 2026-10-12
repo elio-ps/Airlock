@@ -1,0 +1,554 @@
+import concurrent.futures
+import json
+import logging
+import os
+import tempfile
+import typing
+from abc import abstractmethod
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from typing import List, Optional, Set, Tuple
+from urllib.parse import quote, urlparse
+
+import requests
+
+from guarddog.analyzer.analyzer import Analyzer
+from guarddog.utils.archives import safe_extract
+from guarddog.utils.config import PARALLELISM
+
+log = logging.getLogger("guarddog")
+
+_GITHUB_HOSTS = {"github.com", "www.github.com"}
+
+
+def _assert_safe_github_url(parsed, url: str) -> None:
+    """Reject schemes, userinfo, and ports that could send GitHub credentials
+    to a non-GitHub host via a crafted authority component (GHSA-587r-mc96-6f2p).
+    """
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Invalid GitHub repo URL scheme: {url!r}")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"GitHub repo URL must not contain userinfo: {url!r}")
+    if (parsed.hostname or "").lower() not in _GITHUB_HOSTS:
+        raise ValueError(f"Invalid GitHub repo URL host: {url!r}")
+    if parsed.port is not None:
+        raise ValueError(f"GitHub repo URL must not specify a port: {url!r}")
+
+
+def _build_raw_github_url(url: str, branch: str, requirements_name: str) -> str:
+    """Build a raw.githubusercontent.com URL from a validated GitHub repo URL.
+
+    Raises ValueError if `url` is not an http(s) URL pointing at github.com
+    with an `owner/repo` path.
+    """
+    parsed = urlparse(url)
+    _assert_safe_github_url(parsed, url)
+
+    path = parsed.path.strip("/").removesuffix(".git")
+    parts = path.split("/")
+    if len(parts) != 2 or not all(parts):
+        raise ValueError(f"GitHub repo URL must be of the form owner/repo: {url!r}")
+    owner, repo = parts
+
+    quoted_branch = quote(branch, safe="/")
+    quoted_name = quote(requirements_name, safe="/")
+    return (
+        f"https://raw.githubusercontent.com/{owner}/{repo}"
+        f"/{quoted_branch}/{quoted_name}"
+    )
+
+
+def github_blob_to_raw_url(url: str) -> str:
+    """Convert a github.com `/blob/` URL to its raw.githubusercontent.com
+    equivalent so the file content (not the HTML viewer) is downloaded.
+
+    Non-GitHub URLs, and GitHub URLs that aren't `/owner/repo/blob/...` links,
+    are returned unchanged so direct archive URLs still download as-is. A URL
+    that is recognizably GitHub but carries userinfo or an explicit port is
+    rejected, reusing the same credential-leak protection as repo scanning.
+    """
+    parsed = urlparse(url)
+    if (parsed.hostname or "").lower() not in _GITHUB_HOSTS:
+        return url
+    _assert_safe_github_url(parsed, url)
+
+    parts = parsed.path.lstrip("/").split("/", 3)
+    if len(parts) < 4 or parts[2] != "blob" or not (parts[0] and parts[1]):
+        return url
+    owner, repo, _, blob_path = parts
+
+    raw = f"https://raw.githubusercontent.com/{owner}/{repo}/{blob_path}"
+    return f"{raw}?{parsed.query}" if parsed.query else raw
+
+
+def noop(arg: typing.Any) -> None:
+    pass
+
+
+@dataclass
+class DependencyVersion:
+    """
+    This class represents the identified dependency versions in a project,
+    usually defined in a specification file (requirements.txt, package.json, etc.)
+
+    Attributes:
+        version (str): The version of the dependency. e.g., "1.0.0"
+        location (int): This indicates the line number in the specification file where the dependency is defined.
+    """
+
+    version: str  # the version number of the dependency
+    location: int
+
+    def __eq__(self, other):
+        if isinstance(other, str):
+            return self.version == other
+        if isinstance(other, DependencyVersion):
+            return self.version == other.version
+        return NotImplemented
+
+    def __hash__(self):
+        return hash(self.version)
+
+    def __repr__(self):
+        return f"DependencyVersion({self.version!r})"
+
+
+@dataclass
+class Dependency:
+    """
+    This class represents a dependency in a project, usually defined in a specification file
+
+    Attributes:
+        name (str): The name of the dependency. e.g., "requests"
+        versions (Set[DependencyVersion]): A set of identified versions of the dependency.
+    """
+
+    name: str
+    versions: Set[DependencyVersion]
+
+    def __eq__(self, other):
+        if isinstance(other, str):
+            return self.name == other
+        if isinstance(other, Dependency):
+            return self.name == other.name
+        return NotImplemented
+
+    def __repr__(self):
+        return f"Dependency({self.name!r})"
+
+
+@dataclass
+class DependencyFile:
+    """
+    This class represents a specification file for a project (requirements.txt, package.json, etc.)
+    """
+
+    file_path: str
+    dependencies: List[Dependency]
+
+
+class PackageScanner:
+    """
+    Scans package for attack vectors based on source code and metadata rules
+
+    Attributes:
+        analyzer (Analyzer): Analyzer for source code and metadata rules
+    """
+
+    def __init__(self, analyzer: Analyzer):
+        super().__init__()
+        self.analyzer = analyzer
+
+    def scan_local(
+        self,
+        path,
+        rules=None,
+        callback: typing.Callable[[dict], None] = noop,
+        info=None,
+    ) -> dict:
+        """
+        Scans local package
+
+        Args:
+            path (str): Path to the directory containing the package to analyze
+            rules (set, optional): Set of rule names to use. Defaults to all rules.
+            callback (typing.Callable[[dict], None], optional): Callback to apply to Analyzer output
+            info (dict, optional): Package metadata for metadata detectors.
+                When provided, metadata rules run alongside source code rules.
+
+        Raises:
+            Exception: Analyzer exception
+
+        Returns:
+            dict: Analyzer output with rules to results mapping
+        """
+
+        if rules is not None:
+            rules = set(rules)
+
+        if info is not None:
+            # Full analysis: source code + metadata
+            # analyzer.analyze() already formats risks and risk_score
+            pkg_name = (info.get("info") or info).get("name")
+            pkg_version = (info.get("info") or info).get("version")
+            return self.analyzer.analyze(
+                path, info=info, rules=rules, name=pkg_name, version=pkg_version
+            )
+
+        # Source code only (original behavior)
+        sourcecode_results = self.analyzer.analyze_sourcecode(path, rules=rules)
+        callback(sourcecode_results)
+
+        risk_score = self.analyzer.calculate_package_risk_score(sourcecode_results)
+
+        # Extract and format risks for top-level output
+        risk_objects = risk_score.pop("_risks", [])
+        formatted_risks = self.analyzer.format_risks(risk_objects, sourcecode_results)
+
+        return {
+            **sourcecode_results,
+            "risk_score": risk_score,
+            "risks": formatted_risks,
+        }
+
+    @abstractmethod
+    def download_and_get_package_info(
+        self, directory: str, package_name: str, version=None
+    ) -> typing.Tuple[dict, str]:
+        raise NotImplementedError("download_and_get_package_info is not implemented")
+
+    def get_package_version(self, package_info: dict, requested_version=None):
+        return requested_version
+
+    def get_package_dist_path(self, package_info: dict, requested_version=None):
+        """Return the PyPI-style `/packages/...` path of the scanned distribution.
+
+        Used to build PyPI Inspector deep links. Only PyPI packages have one.
+        """
+        return None
+
+    def get_package_inspector_url(self, name, version) -> typing.Optional[str]:
+        """URL to the package's files on PyPI Inspector, or None if unsupported."""
+        return None
+
+    def _annotate_remote_results(self, results, package_info, name, version):
+        """Attach PyPI Inspector metadata to a remote scan's results.
+
+        Shared by the plain and sandboxed remote scan paths so direct scans and
+        `verify` project scans surface the same version, distribution path, and
+        Inspector links.
+        """
+        scanned_version = self.get_package_version(package_info, version)
+        if scanned_version is not None:
+            results["package_version"] = scanned_version
+            if results.get("issues", 0) >= 1:
+                inspector_url = self.get_package_inspector_url(name, scanned_version)
+                if inspector_url is not None:
+                    results["pypi_inspector_url"] = inspector_url
+        dist_path = self.get_package_dist_path(package_info, version)
+        if dist_path is not None:
+            results["pypi_dist_path"] = dist_path
+
+    def _scan_remote(
+        self, name, base_dir, version=None, rules=None, write_package_info=False
+    ):
+        directory = os.path.join(os.path.dirname(os.path.abspath(__file__)), base_dir)
+
+        file_path = None
+        package_info = None
+        try:
+            package_info, file_path = self.download_and_get_package_info(
+                directory, name, version
+            )
+        except Exception as e:
+            log.debug("Unable to download package, ignoring: " + str(e))
+            return {"issues": 0, "errors": {"download-package": str(e)}}
+
+        results = self.analyzer.analyze(file_path, package_info, rules, name, version)
+        self._annotate_remote_results(results, package_info, name, version)
+        if write_package_info:
+            package_name = name.replace("/", "-")
+            suffix = (
+                f"{package_name}-{version}" if version is not None else package_name
+            )
+            with open(
+                os.path.join(results["path"], f"package_info-{suffix}.json"), "w"
+            ) as file:
+                file.write(json.dumps(package_info))
+
+        return results
+
+    def scan_remote(
+        self, name, version=None, rules=None, base_dir=None, write_package_info=False
+    ):
+        """
+        Scans a remote package
+
+        Args:
+            * `name` (str): name of the package on PyPI
+            * `version` (str, optional): version of package (ex. 0.0.1). If not specified, the latest version is assumed
+            * `rules` (set, optional): Set of rule names to use. Defaults to all rules.
+            * `base_dir` (str, optional): directory to use to download package to. If not specified, a temporary folder
+            is created and cleaned up automatically. If not specified, the provided directory is not removed after the
+            scan.
+            * `write_package_info` (bool, default False): if set to true, the result of the PyPI metadata API is written
+             to a json file
+
+        Raises:
+            Exception: Analyzer exception
+
+        Returns:
+            dict: Analyzer output with rules to results mapping
+        """
+        if base_dir is not None:
+            return self._scan_remote(name, base_dir, version, rules, write_package_info)
+
+        with tempfile.TemporaryDirectory() as tmpdirname:
+            # Directory to download compressed and uncompressed package
+            return self._scan_remote(
+                name, tmpdirname, version, rules, write_package_info
+            )
+
+    def _fetch_archive(self, url: str, archive_path: str) -> None:
+        """Downloads an archive file from a URL.
+
+        This method can be overridden by subclasses if custom download logic is needed.
+
+        Args:
+            url (str): download link
+            archive_path (str): path to save the downloaded file
+        """
+        log.debug(f"Downloading package archive from {url}")
+        response = requests.get(url, stream=True)
+
+        with open(archive_path, "wb") as f:
+            f.write(response.raw.read())
+
+    def _extract_archive(self, archive_path: str, target_path: str) -> None:
+        """Extracts an archive file to a target directory.
+
+        This method can be overridden by subclasses to handle special archive formats
+        (e.g., nested archives like .gem files).
+
+        Args:
+            archive_path (str): path to the archive file
+            target_path (str): directory to extract files into
+        """
+        safe_extract(archive_path, target_path)
+        log.debug(f"Successfully extracted files to {target_path}")
+
+    def download_compressed(self, url, archive_path, target_path):
+        """Downloads a compressed file and extracts it.
+
+        This is a template method that orchestrates the download, extraction, and cleanup
+        process. Subclasses can override individual steps (_fetch_archive, _extract_archive)
+        to customize behavior.
+
+        Args:
+            url (str): download link
+            archive_path (str): path to download compressed file
+            target_path (str): path to unzip compressed file
+        """
+        self._fetch_archive(url, archive_path)
+
+        try:
+            self._extract_archive(archive_path, target_path)
+        finally:
+            log.debug(f"Removing temporary archive file {archive_path}")
+            os.remove(archive_path)
+
+
+class ProjectScanner:
+    def __init__(self, package_scanner: PackageScanner):
+        super().__init__()
+        self.package_scanner = package_scanner
+
+    def _authenticate_by_access_token(self) -> tuple[str, str]:
+        """
+        Gives GitHub authentication through access token
+
+        Returns:
+            tuple[str, str]: username, personal access token
+        """
+
+        user = os.getenv("GIT_USERNAME")
+        personal_access_token = os.getenv("GH_TOKEN")
+        if not user or not personal_access_token:
+            log.error("""WARNING: Please set GIT_USERNAME (Github handle) and GH_TOKEN
+                (generate a personal access token in Github settings > developer)
+                as environment variables before proceeding.""")
+            exit(1)
+        return (user, personal_access_token)
+
+    def scan_dependencies(
+        self,
+        dependencies: List[Dependency],
+        rules=None,
+        callback: typing.Callable[[dict], None] = noop,
+    ) -> list[dict]:
+        """
+        scans each possible dependency and version supplied
+
+        Args:
+            dependencies a list of dependencies to scan
+            rules: list of rules to apply
+            callback: callback to call for each result
+
+        Returns:
+            dict: mapping of dependencies to scan results
+
+            ex.
+            {
+                ....
+                <dependency-name>: {
+                        issues: ...,
+                        results: {
+                            ...
+                        }
+                    },
+                ...
+            }
+        """
+
+        def scan_single_dependency(dependency: str, version: Optional[str]) -> dict:
+            log.debug(f"Scanning {dependency} version {version}")
+            result = self.package_scanner.scan_remote(dependency, version, rules)
+            return {"dependency": dependency, "version": version, "result": result}
+
+        num_workers = PARALLELISM
+
+        log.info(f"Scanning using at most {num_workers} parallel worker threads\n")
+        with ThreadPoolExecutor(max_workers=num_workers) as pool:
+            try:
+                futures: typing.List[concurrent.futures.Future] = []
+                for dependency in dependencies:
+                    versions = dependency.versions
+                    if not versions:
+                        # this will cause scan_remote to use the latest version
+                        futures.append(
+                            pool.submit(scan_single_dependency, dependency.name, None)
+                        )
+                    else:
+                        futures.extend(
+                            map(
+                                lambda version: pool.submit(
+                                    scan_single_dependency,
+                                    dependency.name,
+                                    version.version,
+                                ),
+                                versions,
+                            )
+                        )
+
+                results = []
+                for future in concurrent.futures.as_completed(futures):
+                    result = future.result()
+                    if callback is not None:
+                        callback(result)
+                    results.append(result)
+            except KeyboardInterrupt:
+                log.warning("Received keyboard interrupt, cancelling scan\n")
+                pool.shutdown(wait=False, cancel_futures=True)
+
+        return results
+
+    def scan_remote(
+        self, url: str, branch: str, requirements_name: str
+    ) -> tuple[List[Dependency], list[dict]]:
+        """
+        Scans remote requirements.txt file
+
+        Args:
+            url (str): url of the GitHub repo
+            branch (str): branch containing requirements.txt
+            requirements_name (str, optional): name of requirements file.
+                Defaults to "requirements.txt".
+
+        Returns:
+            deps: list of dependencies to scan
+            results: mapping of dependencies to scan results
+            ex.
+            {
+                ....
+                <dependency-name>: {
+                        issues: ...,
+                        results: {
+                            ...
+                        }
+                    },
+                ...
+            }
+        """
+
+        req_url = _build_raw_github_url(url, branch, requirements_name)
+        token = self._authenticate_by_access_token()
+        resp = requests.get(url=req_url, auth=token)
+        resp.raise_for_status()
+        dependencies = self.parse_requirements(resp.content.decode())
+        return dependencies, self.scan_dependencies(dependencies)
+
+    def scan_local(
+        self, path, rules=None, callback: typing.Callable[[dict], None] = noop
+    ) -> Tuple[List[DependencyFile], list[dict]]:
+        """
+        Scans a local requirements files (requirements.txt, package.json, etc.)
+
+        Args:
+            path (str): path to requirements file or directory to search
+            rules: list of rules to apply
+            callback: callback to call for each result
+
+        Returns:
+            deps: list of dependencies to scan
+            results: mapping of dependencies to scan results
+            ex.
+            {
+                ....
+                <dependency-name>: {
+                        issues: ...,
+                        results: {
+                            ...
+                        }
+                    },
+                ...
+            }
+
+        """
+
+        requirement_paths = []
+
+        try:
+            if os.path.isfile(path):
+                requirement_paths.append(path)
+            elif os.path.isdir(path):
+                requirement_paths.extend(self.find_requirements(path))
+            else:
+                raise ValueError(f"unable to find file or directory {path}")
+
+            dep_files: List[DependencyFile] = []
+
+            for req in requirement_paths:
+                with open(req, "r") as f:
+                    dep_files.append(
+                        DependencyFile(
+                            file_path=req,
+                            dependencies=self.parse_requirements(f.read()),
+                        )
+                    )
+            deps_to_scan = [d for d_file in dep_files for d in d_file.dependencies]
+            results = self.scan_dependencies(deps_to_scan, rules, callback)
+            return dep_files, results
+        except Exception as e:
+            log.error(f"Error while scanning. Received {e}")
+            raise e
+
+    @abstractmethod
+    def parse_requirements(self, raw_requirements: str) -> List[Dependency]:
+        pass
+
+    @abstractmethod
+    def find_requirements(
+        self,
+        directory: str,
+    ) -> list[str]:  # returns paths of files
+        pass
