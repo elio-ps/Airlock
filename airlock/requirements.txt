@@ -1,0 +1,7 @@
+# Dépendances Python pures du projet.
+# Trivy (binaire Go) s'installe séparément : voir README.md.
+
+requests>=2.31
+cyclonedx-python-lib>=8.0
+packageurl-python>=0.15
+guarddog>=1.0

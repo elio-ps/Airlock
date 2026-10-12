@@ -1,0 +1,195 @@
+{
+  "confusion_matrix": {
+    "true_positives": 10,
+    "false_negatives": 0,
+    "true_negatives": 10,
+    "false_positives": 0
+  },
+  "metrics": {
+    "accuracy": 1.0,
+    "precision": 1.0,
+    "recall": 1.0
+  },
+  "samples": [
+    {
+      "sample": "malicious/01-threat-network-exfiltration.py",
+      "expected": "malicious",
+      "predicted": "malicious",
+      "triggered_threat_rules": [
+        "threat-network-exfiltration"
+      ],
+      "correct": true
+    },
+    {
+      "sample": "malicious/02-exec-base64.py",
+      "expected": "malicious",
+      "predicted": "malicious",
+      "triggered_threat_rules": [
+        "threat-process-download-exec",
+        "threat-runtime-dynamic-loader",
+        "threat-runtime-obfuscation-base64exec",
+        "threat-runtime-obfuscation-import-exec"
+      ],
+      "correct": true
+    },
+    {
+      "sample": "malicious/03-threat-process-download-exec.py",
+      "expected": "malicious",
+      "predicted": "malicious",
+      "triggered_threat_rules": [
+        "threat-process-download-exec"
+      ],
+      "correct": true
+    },
+    {
+      "sample": "malicious/04-threat-runtime-obfuscation-base64exec.py",
+      "expected": "malicious",
+      "predicted": "malicious",
+      "triggered_threat_rules": [
+        "threat-runtime-obfuscation-base64exec"
+      ],
+      "correct": true
+    },
+    {
+      "sample": "malicious/05-exfiltrate-sensitive-data.py",
+      "expected": "malicious",
+      "predicted": "malicious",
+      "triggered_threat_rules": [
+        "threat-filesystem-read",
+        "threat-network-dns-exfil",
+        "threat-network-exfil-sysinfo",
+        "threat-network-exfiltration",
+        "threat-network-outbound-shady-links",
+        "threat-runtime-environment-read",
+        "threat-runtime-keylogging",
+        "threat-runtime-system-info"
+      ],
+      "correct": true
+    },
+    {
+      "sample": "malicious/06-dll-hijacking.py",
+      "expected": "malicious",
+      "predicted": "malicious",
+      "triggered_threat_rules": [
+        "threat-process-download-exec",
+        "threat-process-injection-dll"
+      ],
+      "correct": true
+    },
+    {
+      "sample": "malicious/07-code-execution.py",
+      "expected": "malicious",
+      "predicted": "malicious",
+      "triggered_threat_rules": [
+        "threat-filesystem-destruction",
+        "threat-network-outbound-shady-links",
+        "threat-process-download-exec",
+        "threat-process-powershell-encoded",
+        "threat-runtime-obfuscation-import-exec"
+      ],
+      "correct": true
+    },
+    {
+      "sample": "malicious/08-threat-filesystem-autostart.py",
+      "expected": "malicious",
+      "predicted": "malicious",
+      "triggered_threat_rules": [
+        "threat-filesystem-autostart"
+      ],
+      "correct": true
+    },
+    {
+      "sample": "malicious/09-silent-process-execution.py",
+      "expected": "malicious",
+      "predicted": "malicious",
+      "triggered_threat_rules": [
+        "threat-process-spawn-silent"
+      ],
+      "correct": true
+    },
+    {
+      "sample": "malicious/10-npm-exfiltrate-sensitive-data.js",
+      "expected": "malicious",
+      "predicted": "malicious",
+      "triggered_threat_rules": [
+        "threat-filesystem-read",
+        "threat-network-exfil-sysinfo",
+        "threat-network-exfiltration",
+        "threat-network-outbound-shady-links",
+        "threat-runtime-enumeration",
+        "threat-runtime-system-info"
+      ],
+      "correct": true
+    },
+    {
+      "sample": "benign/01-threat-network-exfiltration.py",
+      "expected": "benign",
+      "predicted": "benign",
+      "triggered_threat_rules": [],
+      "correct": true
+    },
+    {
+      "sample": "benign/02-threat-process-download-exec.js",
+      "expected": "benign",
+      "predicted": "benign",
+      "triggered_threat_rules": [],
+      "correct": true
+    },
+    {
+      "sample": "benign/03-threat-runtime-obfuscation-base64exec.py",
+      "expected": "benign",
+      "predicted": "benign",
+      "triggered_threat_rules": [],
+      "correct": true
+    },
+    {
+      "sample": "benign/04-threat-filesystem-autostart.py",
+      "expected": "benign",
+      "predicted": "benign",
+      "triggered_threat_rules": [],
+      "correct": true
+    },
+    {
+      "sample": "benign/05-threat-process-sysinfo.py",
+      "expected": "benign",
+      "predicted": "benign",
+      "triggered_threat_rules": [],
+      "correct": true
+    },
+    {
+      "sample": "benign/06-capability-network-lolbas.py",
+      "expected": "benign",
+      "predicted": "benign",
+      "triggered_threat_rules": [],
+      "correct": true
+    },
+    {
+      "sample": "benign/07-capability-filesystem-browser.py",
+      "expected": "benign",
+      "predicted": "benign",
+      "triggered_threat_rules": [],
+      "correct": true
+    },
+    {
+      "sample": "benign/08-threat-process-cryptomining.py",
+      "expected": "benign",
+      "predicted": "benign",
+      "triggered_threat_rules": [],
+      "correct": true
+    },
+    {
+      "sample": "benign/09-threat-runtime-keylogging.py",
+      "expected": "benign",
+      "predicted": "benign",
+      "triggered_threat_rules": [],
+      "correct": true
+    },
+    {
+      "sample": "benign/10-threat-runtime-dynamic-loader.py",
+      "expected": "benign",
+      "predicted": "benign",
+      "triggered_threat_rules": [],
+      "correct": true
+    }
+  ]
+}

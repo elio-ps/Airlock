@@ -1,0 +1,183 @@
+from typing import Optional, Any, Dict
+from pathlib import Path
+import json
+import re
+
+from guarddog.analyzer.metadata.metadata_mismatch import MetadataMismatchDetector
+
+# List of fields where mismatch between package.json and NPM can carry malicious information.
+MANIFEST_FIELDS_CHECKLIST = {
+    "dependencies": dict,
+    "devDependencies": dict,
+    "scripts": dict,
+    "main": str,
+}
+
+
+def _load_package_manifest(path: str, package_name: Optional[str]) -> Dict[str, Any]:
+    """Load package.json from a supported npm tarball root.
+
+    npm normally stores package contents under ``package/``. DefinitelyTyped
+    packages instead use the unscoped package name (for example,
+    ``@types/express`` extracts to ``express/``).
+    """
+    root = Path(path)
+    candidates = [root / "package" / "package.json"]
+    if package_name:
+        unscoped_name = package_name.rsplit("/", 1)[-1]
+        named_manifest = root / unscoped_name / "package.json"
+        if named_manifest not in candidates:
+            candidates.append(named_manifest)
+
+    for package_json in candidates:
+        try:
+            return json.loads(package_json.read_text())
+        except FileNotFoundError:
+            continue
+
+    expected_paths = ", ".join(str(candidate) for candidate in candidates)
+    raise FileNotFoundError(
+        f"package.json was not found at an expected npm archive root: {expected_paths}"
+    )
+
+
+class NPMMetadataMismatchDetector(MetadataMismatchDetector):
+    """Compares npm registry metadata against the package.json inside the tarball.
+
+    Catches attacks where the registry declares different dependencies, scripts,
+    or entry points than what the package.json actually contains.
+    """
+
+    def detect(
+        self,
+        package_info,
+        path: Optional[str] = None,
+        name: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> tuple[bool, Optional[str]]:
+        # Get the latest version if not specified
+        if not version:
+            version = package_info["dist-tags"]["latest"]
+
+        # Load package.json manifest
+        if path is None:
+            raise ValueError("path is needed to run heuristic " + self.get_name())
+        package_name = name or package_info.get("name")
+        package_manifest = _load_package_manifest(path, package_name)
+
+        # Get NPM manifest for version
+        version_info = package_info["versions"][version]
+
+        diff = {
+            field: difference_at_key(version_info, package_manifest, field, field_type)
+            for field, field_type in MANIFEST_FIELDS_CHECKLIST.items()
+        }
+
+        number_different = sum(len(v) for v in diff.values())
+
+        diff_description = (
+            describe_diff(diff) if number_different != 0 else "No differences found"
+        )
+
+        return number_different != 0, diff_description
+
+
+# PerItemDiff is (key, left_value, right_value)
+PerItemDiff = tuple[str, Optional[Any], Optional[Any]]
+Diff = list[PerItemDiff]
+
+# Matches git URL schemes: git+https://, git+ssh://, git://, git+file://
+_GIT_URL_PATTERN = re.compile(r"^git(\+\w+)?://")
+
+
+def _normalize_git_url(value: Optional[Any]) -> Optional[Any]:
+    """Normalize git URLs to avoid false positives on semantically equivalent values.
+
+    Strips the trailing '.git' suffix from git-scheme URLs, since
+    'git+https://github.com/user/repo.git' and 'git+https://github.com/user/repo'
+    resolve to the same repository.
+    """
+    if not isinstance(value, str):
+        return value
+    if _GIT_URL_PATTERN.match(value):
+        return value.removesuffix(".git")
+    return value
+
+
+def diff_at_key_dict(
+    version_at_key: Dict[str, Optional[Any]],
+    manifest_at_key: Dict[str, Optional[Any]],
+) -> Diff:
+    return [
+        (key, version_at_key.get(key), manifest_at_key.get(key))
+        for key in set(version_at_key.keys()).union(set(manifest_at_key.keys()))
+        if _normalize_git_url(version_at_key.get(key))
+        != _normalize_git_url(manifest_at_key.get(key))
+    ]
+
+
+def difference_at_key(
+    version_info: Dict[str, Any],
+    package_manifest: Dict[str, Any],
+    key: str,
+    key_type: type,
+) -> Diff:
+    version_at_key = version_info.get(key, key_type())
+    manifest_at_key = package_manifest.get(key, key_type())
+
+    if not (
+        isinstance(version_at_key, key_type) and isinstance(manifest_at_key, key_type)
+    ):
+        return [
+            (
+                f"Expected type {str(key_type)}",
+                f"{type(version_at_key)}",
+                f"{type(manifest_at_key)}",
+            )
+        ]
+
+    if key_type == dict:
+        return diff_at_key_dict(version_at_key, manifest_at_key)  # type: ignore
+
+    # If it is not a dict do a direct comparison of the value at the key.
+    # Currently the only other type is strings.
+    return (
+        [(key, version_at_key, manifest_at_key)]
+        if version_at_key != manifest_at_key
+        else []
+    )
+
+
+def describe_diff(diff: Dict[str, Diff]) -> str:
+    """
+    Creates a string of the form
+    Difference between manifest and package.json found:
+    dependencies:
+        key: Manifest("v4.0.0"), package.json("v3.0.1")
+    scripts:
+        key: Manifest("a"), package.json("b")
+    main:
+        Manifest:
+            index.js
+        package.json
+            malicious.js
+    ...
+    """
+    description = "Difference between manifest and package.json found: \n"
+    for k, differences in diff.items():
+        if differences:
+            field_description = f"{k}: \n"
+            if MANIFEST_FIELDS_CHECKLIST[k] == dict:
+                for d in differences:
+                    field_description += (
+                        f'  {d[0]}: Manifest("{d[1]}"), package.json("{d[2]}") \n'
+                    )
+            else:
+                manifest_str = "  Manifest:\n"
+                package_str = "  package.json:\n"
+                for d in differences:
+                    manifest_str += f"    {d[1]}\n"
+                    package_str += f"    {d[2]}\n"
+                field_description = field_description + manifest_str + package_str
+            description += field_description
+    return description
