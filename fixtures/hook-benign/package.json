@@ -1,0 +1,10 @@
+{
+  "name": "airlock-test-hook-benign",
+  "version": "1.0.0",
+  "description": "Fixture Airlock : hook postinstall legitime (simple message de build)",
+  "main": "index.js",
+  "scripts": {
+    "postinstall": "echo build ok"
+  },
+  "license": "MIT"
+}

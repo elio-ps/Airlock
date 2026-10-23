@@ -53,6 +53,13 @@ class FetchedPackage:
     extract_path: Path
     sha256: str
     registry_metadata: dict = field(default_factory=dict)
+    origin: str = "registry"  # "registry" (téléchargé) ou "local" (archive fournie)
+
+    @property
+    def source_root(self) -> Path:
+        """Dossier contenant réellement les fichiers du paquet (npm : `package/`)."""
+        candidate = self.extract_path / "package"
+        return candidate if candidate.is_dir() else self.extract_path
 
     def to_dict(self) -> dict:
         return {
@@ -62,6 +69,7 @@ class FetchedPackage:
             "archive_path": str(self.archive_path),
             "extract_path": str(self.extract_path),
             "sha256": self.sha256,
+            "origin": self.origin,
         }
 
 
@@ -199,6 +207,63 @@ def fetch_pypi(name: str, version: str | None, workdir: Path) -> FetchedPackage:
         extract_path=extract_path,
         sha256=_sha256_of(archive_path),
         registry_metadata=meta["info"],
+    )
+
+
+def fetch_local(ecosystem: Ecosystem, archive: Path, workdir: Path | None = None) -> FetchedPackage:
+    """
+    Ingère une archive LOCALE (ex. produite par `npm pack --ignore-scripts`)
+    au lieu de la télécharger depuis un registre. Utile pour tester le
+    pipeline sur un paquet maison qui n'est publié nulle part.
+
+    Mêmes garde-fous que l'ingestion réseau : aucune exécution de code,
+    extraction protégée contre le path traversal. Il n'y a pas de checksum
+    de registre à comparer ; le sha256 de l'archive est enregistré pour la
+    traçabilité. Seul npm est géré pour l'instant.
+    """
+    if ecosystem != "npm":
+        raise FetchError("Ingestion locale : seul l'écosystème npm est supporté pour l'instant")
+
+    archive = Path(archive)
+    if not archive.is_file():
+        raise FetchError(f"Archive locale introuvable : {archive}")
+    if not archive.name.endswith((".tgz", ".tar.gz")):
+        raise FetchError(f"Archive npm attendue (.tgz / .tar.gz) : {archive.name}")
+
+    workdir = workdir or Path(tempfile.mkdtemp(prefix="airlock-"))
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    stem = archive.name.removesuffix(".tgz").removesuffix(".tar.gz")
+    extract_path = workdir / stem
+    extract_path.mkdir(parents=True, exist_ok=True)
+    try:
+        _safe_extract_tar(archive, extract_path)
+    except tarfile.TarError as e:
+        raise FetchError(f"Archive illisible : {archive} ({e})") from e
+
+    pkg_json = extract_path / "package" / "package.json"
+    if not pkg_json.exists():
+        pkg_json = extract_path / "package.json"
+    if not pkg_json.exists():
+        raise FetchError(f"package.json introuvable dans l'archive : {archive.name}")
+    try:
+        meta = json.loads(pkg_json.read_text(encoding="utf-8", errors="ignore"))
+    except json.JSONDecodeError as e:
+        raise FetchError(f"package.json invalide dans {archive.name} : {e}") from e
+
+    name, version = meta.get("name"), meta.get("version")
+    if not name or not version:
+        raise FetchError(f"'name' et 'version' requis dans le package.json de {archive.name}")
+
+    return FetchedPackage(
+        name=name,
+        version=version,
+        ecosystem="npm",
+        archive_path=archive.resolve(),
+        extract_path=extract_path,
+        sha256=_sha256_of(archive),
+        registry_metadata=meta,
+        origin="local",
     )
 
 

@@ -1,0 +1,10 @@
+{
+  "name": "airlock-test-evil-sim",
+  "version": "1.0.0",
+  "description": "FIXTURE DE TEST Airlock : simule un postinstall malveillant, inoffensif (localhost + canari uniquement)",
+  "main": "index.js",
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "license": "MIT"
+}
