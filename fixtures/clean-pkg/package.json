@@ -1,0 +1,7 @@
+{
+  "name": "airlock-test-clean",
+  "version": "1.0.0",
+  "description": "Fixture Airlock : paquet propre, sans hook d'installation",
+  "main": "index.js",
+  "license": "MIT"
+}

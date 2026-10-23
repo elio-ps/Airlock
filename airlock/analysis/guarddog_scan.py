@@ -102,29 +102,54 @@ def _rule_triggered(value) -> bool:
     return True
 
 
+def _get_scanner(ecosystem: Ecosystem):
+    if ecosystem == "pypi":
+        from guarddog.scanners.pypi_package_scanner import PypiPackageScanner
+        return PypiPackageScanner()
+    if ecosystem == "npm":
+        from guarddog.scanners.npm_package_scanner import NPMPackageScanner
+        return NPMPackageScanner()
+    raise ValueError(f"Écosystème non supporté par GuardDog : {ecosystem}")
+
+
 def scan_package(ecosystem: Ecosystem, name: str, version: str | None = None) -> GuardDogResult:
     """
     Lance GuardDog sur un paquet distant (téléchargement géré en interne par
     GuardDog, dans un répertoire temporaire qu'il nettoie lui-même).
     """
     try:
-        if ecosystem == "pypi":
-            from guarddog.scanners.pypi_package_scanner import PypiPackageScanner
-            scanner = PypiPackageScanner()
-        elif ecosystem == "npm":
-            from guarddog.scanners.npm_package_scanner import NPMPackageScanner
-            scanner = NPMPackageScanner()
-        else:
-            raise ValueError(f"Écosystème non supporté par GuardDog : {ecosystem}")
-
-        raw = scanner.scan_remote(name, version=version)
+        raw = _get_scanner(ecosystem).scan_remote(name, version=version)
     except Exception as e:  # GuardDog peut lever des exceptions variées (réseau, parsing...)
         return GuardDogResult(
             package_name=name, version=version, ecosystem=ecosystem,
             issue_count=0, findings=[], rule_errors={},
             scan_failed=True, error_message=str(e),
         )
+    return _build_result(raw, ecosystem, name, version)
 
+
+def scan_local(ecosystem: Ecosystem, path: Path, name: str | None = None,
+                version: str | None = None) -> GuardDogResult:
+    """
+    Lance GuardDog sur un répertoire DÉJÀ extrait (aucun téléchargement).
+
+    Seules les règles "sourcecode" s'appliquent : les règles "metadata"
+    (typosquatting, auteur suspect...) ont besoin des métadonnées du
+    registre et ne tournent donc pas en mode local.
+    """
+    label = name or Path(path).name
+    try:
+        raw = _get_scanner(ecosystem).scan_local(str(path))
+    except Exception as e:
+        return GuardDogResult(
+            package_name=label, version=version, ecosystem=ecosystem,
+            issue_count=0, findings=[], rule_errors={},
+            scan_failed=True, error_message=str(e),
+        )
+    return _build_result(raw, ecosystem, label, version)
+
+
+def _build_result(raw: dict, ecosystem: Ecosystem, name: str, version: str | None) -> GuardDogResult:
     results = raw.get("results", {})
     findings = [
         GuardDogFinding(rule_name=rule, category=_categorize(rule), matches=value)

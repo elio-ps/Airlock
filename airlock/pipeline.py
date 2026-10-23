@@ -10,6 +10,7 @@ Usage :
     python3 -m airlock.pipeline pypi requests --version 2.31.0
     python3 -m airlock.pipeline npm left-pad
     python3 -m airlock.pipeline npm some-package --skip trivy,depsdev
+    python3 -m airlock.pipeline npm --local ./mon-paquet-1.0.0.tgz --skip trivy
 
 Chaque étage est isolé : l'échec d'un étage (typiquement réseau) ne fait
 pas planter les suivants, il est simplement marqué "unavailable" dans le
@@ -24,7 +25,7 @@ import sys
 from pathlib import Path
 
 from airlock.analysis import depsdev, guarddog_scan, trivy_scan
-from airlock.ingest.fetch import FetchError, fetch_package
+from airlock.ingest.fetch import FetchError, fetch_local, fetch_package
 from airlock.sbom.generate import generate_sbom_file
 from airlock.verdict.aggregate import Policy, aggregate
 
@@ -33,23 +34,34 @@ WORKDIR_ROOT = Path("./airlock_runs")
 
 def run_pipeline(
     ecosystem: str,
-    name: str,
+    name: str | None = None,
     version: str | None = None,
     skip: set[str] | None = None,
     policy: Policy | None = None,
     verbose: bool = True,
     trivy_timeout: int = 120,
+    local_archive: Path | None = None,
 ) -> dict:
-    skip = skip or set()
+    skip = set(skip or set())
 
     def log(msg: str) -> None:
         if verbose:
             print(f"[airlock] {msg}", file=sys.stderr)
 
     # --- 1. Ingestion ---
-    log(f"Ingestion de {ecosystem}:{name}{'@' + version if version else ''}...")
     try:
-        pkg = fetch_package(ecosystem, name, version)
+        if local_archive is not None:
+            log(f"Ingestion de l'archive locale {local_archive} ({ecosystem})...")
+            pkg = fetch_local(ecosystem, local_archive)
+            # Un paquet local n'existe sur aucun registre : deps.dev n'a rien à dire.
+            if "depsdev" not in skip:
+                skip.add("depsdev")
+                log("  -> paquet local : étage deps.dev ignoré (aucun registre à interroger)")
+        else:
+            if not name:
+                return {"error": "ingestion échouée : nom de paquet manquant (ou --local requis)"}
+            log(f"Ingestion de {ecosystem}:{name}{'@' + version if version else ''}...")
+            pkg = fetch_package(ecosystem, name, version)
     except FetchError as e:
         log(f"ÉCHEC ingestion : {e}")
         return {"error": f"ingestion échouée : {e}"}
@@ -79,7 +91,12 @@ def run_pipeline(
     guarddog_result = None
     if "guarddog" not in skip:
         log("Scan GuardDog (comportement)...")
-        guarddog_result = guarddog_scan.scan_package(pkg.ecosystem, pkg.name, pkg.version)
+        if pkg.origin == "local":
+            guarddog_result = guarddog_scan.scan_local(
+                pkg.ecosystem, pkg.source_root, pkg.name, pkg.version
+            )
+        else:
+            guarddog_result = guarddog_scan.scan_package(pkg.ecosystem, pkg.name, pkg.version)
         if guarddog_result.scan_failed:
             log(f"  -> indisponible : {guarddog_result.error_message[:150]}")
         else:
@@ -125,8 +142,12 @@ def run_pipeline(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Airlock — étage 'paquet au crible'")
     parser.add_argument("ecosystem", choices=["npm", "pypi"])
-    parser.add_argument("name")
+    parser.add_argument("name", nargs="?", default=None,
+                         help="nom du paquet (omis avec --local)")
     parser.add_argument("--version", default=None)
+    parser.add_argument("--local", type=Path, default=None, metavar="ARCHIVE",
+                         help="analyser une archive locale (.tgz issu de `npm pack "
+                              "--ignore-scripts`) au lieu de télécharger un paquet ; npm uniquement")
     parser.add_argument("--skip", default="", help="étages à sauter, séparés par des virgules "
                                                      "(sbom,trivy,guarddog,depsdev)")
     parser.add_argument("--policy", type=Path, default=None, help="fichier JSON de policy custom")
@@ -135,6 +156,10 @@ def main() -> None:
                               "premier scan le temps du téléchargement de la DB, ex. 300)")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
+    if args.local is None and not args.name:
+        parser.error("indiquez un nom de paquet, ou une archive avec --local")
+    if args.local is not None and args.name:
+        parser.error("--local et un nom de paquet sont exclusifs")
 
     skip = {s.strip() for s in args.skip.split(",") if s.strip()}
     policy = Policy.from_file(args.policy) if args.policy else None
@@ -142,7 +167,7 @@ def main() -> None:
     report = run_pipeline(
         args.ecosystem, args.name, args.version,
         skip=skip, policy=policy, verbose=not args.quiet,
-        trivy_timeout=args.trivy_timeout,
+        trivy_timeout=args.trivy_timeout, local_archive=args.local,
     )
     print(json.dumps(report.get("verdict", report), indent=2, ensure_ascii=False))
 
