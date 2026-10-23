@@ -1,2 +1,5 @@
 /airlock_runs/
 /venv/
+/airlock/venv/
+/airlock/__pycache__/
+/__pycache__/
