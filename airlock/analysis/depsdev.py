@@ -24,12 +24,14 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from typing import Literal
+from urllib.parse import quote
 
 import requests
 
 Ecosystem = Literal["npm", "pypi"]
 
 API_BASE = "https://api.deps.dev/v3"
+API_ALPHA_BASE = "https://api.deps.dev/v3alpha"  # only endpoint exposing dependent counts
 
 # deps.dev system names
 _SYSTEM_MAP = {"npm": "NPM", "pypi": "PyPI"}
@@ -39,6 +41,10 @@ DEFAULT_TIMEOUT = 15
 
 class DepsDevError(Exception):
     """Error while calling the deps.dev API."""
+
+
+class DepsDevNotFound(DepsDevError):
+    """deps.dev does not know this resource (a signal, not an outage)."""
 
 
 @dataclass
@@ -62,6 +68,7 @@ class DepsDevResult:
     raw: dict = field(default_factory=dict)
     scan_failed: bool = False
     error_message: str | None = None
+    package_unknown: bool = False  # 404: unknown to deps.dev, typical of a very recent package
 
     def to_dict(self) -> dict:
         return {
@@ -74,6 +81,7 @@ class DepsDevResult:
             "dependent_count": self.dependent_count,
             "project_repo": self.project_repo,
             "licenses": self.licenses,
+            "package_unknown": self.package_unknown,
             "scan_failed": self.scan_failed,
             "error_message": self.error_message,
         }
@@ -81,9 +89,36 @@ class DepsDevResult:
 
 def _get(url: str) -> dict:
     resp = requests.get(url, timeout=DEFAULT_TIMEOUT, headers={"User-Agent": "airlock-scanner/0.1"})
+    if resp.status_code == 404:
+        raise DepsDevNotFound(f"deps.dev does not know {url}")
     if resp.status_code != 200:
         raise DepsDevError(f"deps.dev answered {resp.status_code} for {url}")
     return resp.json()
+
+
+def _q(value: str) -> str:
+    """Encode a path segment: scoped npm names and project keys contain slashes."""
+    return quote(value, safe="")
+
+
+def resolved_dependencies(ecosystem: Ecosystem, name: str, version: str) -> list[tuple[str, str]] | None:
+    """
+    Return the (name, version) pairs of the resolved dependency graph, transitive
+    dependencies included, without installing anything. None when unavailable.
+
+    This is deps.dev's resolution at query time: a real install could pick
+    other versions within the declared ranges.
+    """
+    url = f"{API_BASE}/systems/{_SYSTEM_MAP[ecosystem]}/packages/{_q(name)}/versions/{_q(version)}:dependencies"
+    try:
+        graph = _get(url)
+    except (DepsDevError, requests.RequestException, ValueError):
+        return None
+    return [
+        (node["versionKey"]["name"], node["versionKey"]["version"])
+        for node in graph.get("nodes", [])
+        if node.get("relation") != "SELF"
+    ]
 
 
 def query_package(ecosystem: Ecosystem, name: str, version: str | None = None) -> DepsDevResult:
@@ -94,7 +129,7 @@ def query_package(ecosystem: Ecosystem, name: str, version: str | None = None) -
     try:
         # 1. Resolve the version when not given (deps.dev needs an explicit version)
         if version is None:
-            pkg_meta = _get(f"{API_BASE}/systems/{system}/packages/{name}")
+            pkg_meta = _get(f"{API_BASE}/systems/{system}/packages/{_q(name)}")
             versions = pkg_meta.get("versions", [])
             if not versions:
                 raise DepsDevError(f"No version found on deps.dev for {name}")
@@ -104,7 +139,7 @@ def query_package(ecosystem: Ecosystem, name: str, version: str | None = None) -
             version = default["versionKey"]["version"]
 
         version_data = _get(
-            f"{API_BASE}/systems/{system}/packages/{name}/versions/{version}"
+            f"{API_BASE}/systems/{system}/packages/{_q(name)}/versions/{_q(version)}"
         )
 
         project_key = None
@@ -121,7 +156,7 @@ def query_package(ecosystem: Ecosystem, name: str, version: str | None = None) -
         if project_key:
             project_repo = f"https://{project_key}" if not project_key.startswith("http") else project_key
             try:
-                project_data = _get(f"{API_BASE}/projects/{project_key}")
+                project_data = _get(f"{API_BASE}/projects/{_q(project_key)}")
                 scorecard = project_data.get("scorecard", {})
                 scorecard_score = scorecard.get("overallScore")
                 scorecard_checks = [
@@ -132,14 +167,18 @@ def query_package(ecosystem: Ecosystem, name: str, version: str | None = None) -
                     )
                     for chk in scorecard.get("checks", [])
                 ]
-                dependent_count = project_data.get("depsdevCounts", {}).get("directDependentCount")
             except DepsDevError:
                 pass  # project found but no scorecard computed: carry on without it
 
-        advisories = [
-            a.get("advisoryKey", {}).get("id", "unknown")
-            for a in version_data.get("advisoryKeys", []) or []
-        ]
+        try:
+            dependents = _get(
+                f"{API_ALPHA_BASE}/systems/{system}/packages/{_q(name)}/versions/{_q(version)}:dependents"
+            )
+            dependent_count = dependents.get("directDependentCount")
+        except DepsDevError:
+            pass  # alpha endpoint: a missing count must not fail the whole stage
+
+        advisories = [a.get("id", "unknown") for a in version_data.get("advisoryKeys", []) or []]
 
         licenses = version_data.get("licenses", []) or []
 
@@ -156,7 +195,14 @@ def query_package(ecosystem: Ecosystem, name: str, version: str | None = None) -
             raw=version_data,
         )
 
-    except (DepsDevError, requests.RequestException) as e:
+    except DepsDevNotFound as e:
+        return DepsDevResult(
+            package_name=name, version=version, ecosystem=ecosystem,
+            scorecard_score=None, scorecard_checks=[], default_branch_advisories=[],
+            dependent_count=None, project_repo=None, licenses=[],
+            package_unknown=True, error_message=str(e),
+        )
+    except (DepsDevError, requests.RequestException, ValueError) as e:
         return DepsDevResult(
             package_name=name, version=version, ecosystem=ecosystem,
             scorecard_score=None, scorecard_checks=[], default_branch_advisories=[],

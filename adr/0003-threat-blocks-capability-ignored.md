@@ -1,6 +1,6 @@
 # ADR-0003: `threat-*` rules block, `capability-*` rules are ignored
 
-Status: accepted, to review (see Consequences) · Date: 2026-11-05 (written after the fact)
+Status: superseded by [ADR-0007](0007-block-needs-dynamic-proof.md) and [ADR-0008](0008-undetonated-hook-quarantine.md) · Date: 2026-11-05 (written after the fact)
 
 ## Context
 GuardDog produces two rule families. `capability-*` describes what the code can

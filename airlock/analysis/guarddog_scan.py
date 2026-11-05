@@ -127,16 +127,18 @@ def scan_package(ecosystem: Ecosystem, name: str, version: str | None = None) ->
 
 
 def scan_local(ecosystem: Ecosystem, path: Path, name: str | None = None,
-                version: str | None = None) -> GuardDogResult:
+                version: str | None = None, info: dict | None = None) -> GuardDogResult:
     """
     Run GuardDog on an ALREADY extracted directory (no download).
 
-    Only "sourcecode" rules apply: "metadata" rules (typosquatting, suspicious
-    author...) need registry metadata and do not run in local mode.
+    This is what the pipeline uses, so that the analysed bytes are exactly the
+    ones that were ingested and integrity-checked. "metadata" rules
+    (typosquatting, suspicious author...) only run when `info`, the registry
+    document of the package, is given.
     """
     label = name or Path(path).name
     try:
-        raw = _get_scanner(ecosystem).scan_local(str(path))
+        raw = _get_scanner(ecosystem).scan_local(str(path), info=info)
     except Exception as e:
         return GuardDogResult(
             package_name=label, version=version, ecosystem=ecosystem,

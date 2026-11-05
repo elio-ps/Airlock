@@ -95,7 +95,13 @@ def scan_sbom(sbom_path: Path, cache_dir: Path | None = None, timeout: int = 120
     returned, so that the pipeline can carry on and mark this signal as
     "unavailable".
     """
-    binary = _find_trivy_binary()
+    try:
+        binary = _find_trivy_binary()
+    except TrivyNotFoundError as e:
+        return TrivyResult(
+            sbom_path=sbom_path, findings=[], raw_output={},
+            scan_failed=True, error_message=str(e),
+        )
 
     cmd = [binary, "sbom", str(sbom_path), "--format", "json", "--quiet"]
     if cache_dir is not None:
@@ -136,8 +142,8 @@ def scan_sbom(sbom_path: Path, cache_dir: Path | None = None, timeout: int = 120
                     installed_version=vuln.get("InstalledVersion", "unknown"),
                     fixed_version=vuln.get("FixedVersion"),
                     severity=vuln.get("Severity", "UNKNOWN"),
-                    title=vuln.get("Title", vuln.get("Description", ""))[:200],
-                    references=vuln.get("References", [])[:5],
+                    title=(vuln.get("Title") or vuln.get("Description") or "")[:200],
+                    references=(vuln.get("References") or [])[:5],
                 )
             )
 
@@ -153,12 +159,7 @@ if __name__ == "__main__":
     parser.add_argument("--cache-dir", type=Path, default=None)
     args = parser.parse_args()
 
-    try:
-        result = scan_sbom(args.sbom_path, cache_dir=args.cache_dir)
-    except TrivyNotFoundError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-
+    result = scan_sbom(args.sbom_path, cache_dir=args.cache_dir)
     print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
     if result.scan_failed:
         sys.exit(2)

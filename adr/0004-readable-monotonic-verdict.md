@@ -12,17 +12,17 @@ adjustable to a company's policy.
 
 ## Decision
 Option 2 (`verdict/aggregate.py`):
-- a GuardDog `threat-*` rule: BLOCK;
+- a GuardDog `threat-*` rule: QUARANTINE (BLOCK until ADR-0007);
 - a HIGH or CRITICAL CVE: QUARANTINE;
 - Scorecard < 3/10 on a little-used package (< 50 dependents): QUARANTINE;
 - otherwise ALLOW.
-The verdict can only get worse across stages: a BLOCK is never cancelled by a
-good deps.dev score. Thresholds are isolated in `Policy`, loadable from a JSON
+The verdict can only get worse across stages: a BLOCK or a QUARANTINE is never
+cancelled by a good deps.dev score or a clean detonation. Thresholds are isolated in `Policy`, loadable from a JSON
 file.
 
 ## Consequences
 + Each decision is justified by a readable reason in the report.
 + Thresholds can change without touching the logic.
 − Less fine-grained than a score: two weak signals do not add up.
-− The dependents rule relies on the `dependent_count` field of deps.dev, to
-  verify on a real response (a missing value counts as 0 in the code).
+− The dependents rule relies on the `dependent_count` field, read from the
+  deps.dev `v3alpha` API (checked on real responses). A missing value counts as 0.

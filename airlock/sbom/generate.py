@@ -26,7 +26,7 @@ from cyclonedx.model.license import DisjunctiveLicense, LicenseExpression
 from cyclonedx.output.json import JsonV1Dot5
 from packageurl import PackageURL
 
-from airlock.ingest.fetch import FetchedPackage
+from airlock.ingest.fetch import FetchedPackage, safe_slug
 
 
 def _npm_dependencies(extract_path: Path) -> dict[str, str]:
@@ -90,14 +90,21 @@ def _pypi_dependencies(extract_path: Path, registry_metadata: dict) -> dict[str,
 
 def _make_purl(ecosystem: str, name: str, version: str) -> PackageURL:
     if ecosystem == "npm":
-        return PackageURL(type="npm", name=name, version=version)
+        namespace, _, short_name = name.rpartition("/")  # "@scope/pkg" or "pkg"
+        return PackageURL(type="npm", namespace=namespace or None, name=short_name, version=version)
     elif ecosystem == "pypi":
         return PackageURL(type="pypi", name=name, version=version)
     raise ValueError(f"Ecosystem not supported for purl: {ecosystem}")
 
 
-def build_sbom(pkg: FetchedPackage) -> Bom:
-    """Build the CycloneDX Bom object for the ingested package."""
+def build_sbom(pkg: FetchedPackage, resolved: list[tuple[str, str]] | None = None) -> Bom:
+    """
+    Build the CycloneDX Bom object for the ingested package.
+
+    `resolved` is the resolved dependency graph (see depsdev.resolved_dependencies).
+    Only exact versions can carry a purl, and Trivy ignores components without
+    one: declared ranges are an inventory, not something a CVE scanner can match.
+    """
     bom = Bom()
     bom.metadata.component = root = Component(
         name=pkg.name,
@@ -135,16 +142,27 @@ def build_sbom(pkg: FetchedPackage) -> Bom:
     # CycloneDX 1.5 spec it only lives in bom.metadata.component, and adding it
     # twice made the serializer rewrite its bom-ref.
 
-    for dep_name, dep_range in deps.items():
-        dep_ref = f"{pkg.ecosystem}:{dep_name}@{dep_range}"
-        dep_component = Component(
-            name=dep_name,
-            version=dep_range,  # keep the declared range, no resolution here
-            type=ComponentType.LIBRARY,
-            bom_ref=dep_ref,
-        )
-        bom.components.add(dep_component)
-        bom.register_dependency(root, [dep_component])
+    if resolved is not None:
+        components = [
+            Component(
+                name=dep_name, version=dep_version, type=ComponentType.LIBRARY,
+                purl=_make_purl(pkg.ecosystem, dep_name, dep_version),
+                bom_ref=f"{pkg.ecosystem}:{dep_name}@{dep_version}",
+            )
+            for dep_name, dep_version in resolved
+        ]
+    else:
+        components = [
+            Component(
+                name=dep_name, version=dep_range, type=ComponentType.LIBRARY,
+                bom_ref=f"{pkg.ecosystem}:{dep_name}@{dep_range}",
+            )
+            for dep_name, dep_range in deps.items()
+        ]
+
+    for component in components:
+        bom.components.add(component)
+    bom.register_dependency(root, components)
 
     return bom
 
@@ -153,11 +171,12 @@ def sbom_to_json(bom: Bom) -> str:
     return JsonV1Dot5(bom).output_as_string(indent=2)
 
 
-def generate_sbom_file(pkg: FetchedPackage, output_dir: Path) -> Path:
+def generate_sbom_file(pkg: FetchedPackage, output_dir: Path,
+                       resolved: list[tuple[str, str]] | None = None) -> Path:
     """Generate the SBOM, write it to disk and return the file path."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    bom = build_sbom(pkg)
-    out_path = output_dir / f"{pkg.name.replace('/', '__')}-{pkg.version}.cdx.json"
+    bom = build_sbom(pkg, resolved)
+    out_path = output_dir / f"{safe_slug(pkg.name)}-{safe_slug(pkg.version)}.cdx.json"
     out_path.write_text(sbom_to_json(bom), encoding="utf-8")
     return out_path
 

@@ -21,15 +21,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 from airlock.analysis import depsdev, guarddog_scan, trivy_scan
-from airlock.ingest.fetch import FetchError, fetch_local, fetch_package
+from airlock.ingest.fetch import FetchError, fetch_local, fetch_package, safe_slug
 from airlock.sbom.generate import generate_sbom_file
 from airlock.verdict.aggregate import Policy, aggregate
 
 WORKDIR_ROOT = Path("./airlock_runs")
+
+# Exit codes, so that a CI job or a shell script can act on the verdict.
+EXIT_CODES = {"allow": 0, "quarantine": 2, "block": 3}
+EXIT_ERROR = 1
 
 
 def run_pipeline(
@@ -48,11 +54,21 @@ def run_pipeline(
         if verbose:
             print(f"[airlock] {msg}", file=sys.stderr)
 
+    workdir = Path(tempfile.mkdtemp(prefix="airlock-"))
+    try:
+        return _run_stages(ecosystem, name, version, skip, policy, log,
+                           trivy_timeout, local_archive, workdir)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _run_stages(ecosystem, name, version, skip, policy, log,
+                trivy_timeout, local_archive, workdir) -> dict:
     # --- 1. Ingestion ---
     try:
         if local_archive is not None:
             log(f"Ingesting local archive {local_archive} ({ecosystem})...")
-            pkg = fetch_local(ecosystem, local_archive)
+            pkg = fetch_local(ecosystem, local_archive, workdir=workdir)
             # A local package exists on no registry: deps.dev has nothing to say.
             if "depsdev" not in skip:
                 skip.add("depsdev")
@@ -61,20 +77,25 @@ def run_pipeline(
             if not name:
                 return {"error": "ingestion failed: missing package name (or --local required)"}
             log(f"Ingesting {ecosystem}:{name}{'@' + version if version else ''}...")
-            pkg = fetch_package(ecosystem, name, version)
+            pkg = fetch_package(ecosystem, name, version, workdir=workdir)
     except FetchError as e:
         log(f"Ingestion FAILED: {e}")
         return {"error": f"ingestion failed: {e}"}
     log(f"  -> {pkg.name}@{pkg.version} fetched, sha256={pkg.sha256[:12]}...")
 
-    run_dir = WORKDIR_ROOT / f"{pkg.ecosystem}-{pkg.name.replace('/', '__')}-{pkg.version}"
+    run_dir = WORKDIR_ROOT / f"{pkg.ecosystem}-{safe_slug(pkg.name)}-{safe_slug(pkg.version)}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
     # --- 2. SBOM ---
     sbom_path = None
     if "sbom" not in skip:
         log("Generating the CycloneDX SBOM...")
-        sbom_path = generate_sbom_file(pkg, run_dir / "sbom")
+        resolved = None
+        if pkg.origin == "registry" and "depsdev" not in skip:
+            resolved = depsdev.resolved_dependencies(pkg.ecosystem, pkg.name, pkg.version)
+        if resolved is None:
+            log("  -> dependency graph unavailable: declared ranges only, CVE coverage is partial")
+        sbom_path = generate_sbom_file(pkg, run_dir / "sbom", resolved)
         log(f"  -> {sbom_path}")
 
     # --- 3. Trivy (needs the SBOM) ---
@@ -91,12 +112,11 @@ def run_pipeline(
     guarddog_result = None
     if "guarddog" not in skip:
         log("GuardDog scan (behaviour)...")
-        if pkg.origin == "local":
-            guarddog_result = guarddog_scan.scan_local(
-                pkg.ecosystem, pkg.source_root, pkg.name, pkg.version
-            )
-        else:
-            guarddog_result = guarddog_scan.scan_package(pkg.ecosystem, pkg.name, pkg.version)
+        # Always the ingested bytes: a second download could return something else.
+        guarddog_result = guarddog_scan.scan_local(
+            pkg.ecosystem, pkg.source_root, pkg.name, pkg.version,
+            info=pkg.registry_package_info,
+        )
         if guarddog_result.scan_failed:
             log(f"  -> unavailable: {guarddog_result.error_message[:150]}")
         else:
@@ -119,6 +139,7 @@ def run_pipeline(
         package_name=pkg.name, version=pkg.version, ecosystem=pkg.ecosystem,
         trivy_result=trivy_result, guarddog_result=guarddog_result,
         depsdev_result=depsdev_result, sbom_path=sbom_path, policy=policy,
+        skipped=skip, install_hooks=pkg.install_hooks,
     )
     log(f"  -> VERDICT: {verdict.verdict.value.upper()}")
 
@@ -170,6 +191,7 @@ def main() -> None:
         trivy_timeout=args.trivy_timeout, local_archive=args.local,
     )
     print(json.dumps(report.get("verdict", report), indent=2, ensure_ascii=False))
+    sys.exit(EXIT_CODES[report["verdict"]["verdict"]] if "verdict" in report else EXIT_ERROR)
 
 
 if __name__ == "__main__":

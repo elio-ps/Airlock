@@ -11,7 +11,7 @@ be mistaken for a clean signal. Each stage has three explicit states:
 OK / SUSPECT / UNAVAILABLE.
 
 The final verdict follows simple, deliberately readable logic:
-  - one GuardDog "threat-*" rule => BLOCK (strong behavioural signal)
+  - one GuardDog "threat-*" rule => QUARANTINE (a static pattern, not a proof)
   - a CRITICAL/HIGH CVE => QUARANTINE
   - a very low OpenSSF Scorecard (< 3/10) on a little-used package =>
     QUARANTINE (weak project hygiene)
@@ -32,6 +32,7 @@ class StageStatus(str, Enum):
     OK = "ok"                    # stage ran, no suspicious signal
     SUSPECT = "suspect"          # stage ran, suspicious signal(s) found
     UNAVAILABLE = "unavailable"  # stage could not run (network, timeout, etc.)
+    SKIPPED = "skipped"          # stage deliberately not run (--skip, local package)
 
 
 class Verdict(str, Enum):
@@ -43,12 +44,16 @@ class Verdict(str, Enum):
 @dataclass
 class Policy:
     """Decision thresholds, meant to be overridden by a company configuration."""
-    block_on_any_threat_rule: bool = True
+    # False: static signals alone only quarantine, see ADR-0007.
+    block_on_any_threat_rule: bool = False
     quarantine_on_cve_severity: tuple[str, ...] = ("HIGH", "CRITICAL")
     quarantine_on_scorecard_below: float = 3.0
     quarantine_on_scorecard_below_dependents: int = 50  # the scorecard threshold only
     # applies to little-used packages: a widely used package with a low score is a
     # different signal (to report, not to block blindly)
+    quarantine_on_unknown_package: bool = True  # unknown to deps.dev: typically brand new
+    quarantine_on_undetonated_hook: bool = True  # install-time code nobody watched run
+    fail_closed: bool = False  # an unavailable stage means QUARANTINE (ADR-0005)
 
     @classmethod
     def from_file(cls, path: Path) -> "Policy":
@@ -101,6 +106,8 @@ def aggregate(
     depsdev_result=None,     # airlock.analysis.depsdev.DepsDevResult | None
     sbom_path: Path | None = None,
     policy: Policy | None = None,
+    skipped: frozenset[str] | set[str] = frozenset(),
+    install_hooks: list[str] | None = None,
 ) -> PackageVerdict:
     policy = policy or Policy()
     stages: list[StageSummary] = []
@@ -116,7 +123,7 @@ def aggregate(
 
     # --- Trivy stage (CVEs) ---
     if trivy_result is None:
-        stages.append(StageSummary(name="trivy", status=StageStatus.UNAVAILABLE, detail="not run"))
+        stages.append(_not_run("trivy", "trivy" in skipped))
     elif trivy_result.scan_failed:
         stages.append(StageSummary(
             name="trivy", status=StageStatus.UNAVAILABLE,
@@ -143,7 +150,7 @@ def aggregate(
 
     # --- GuardDog stage (behaviour) ---
     if guarddog_result is None:
-        stages.append(StageSummary(name="guarddog", status=StageStatus.UNAVAILABLE, detail="not run"))
+        stages.append(_not_run("guarddog", "guarddog" in skipped))
     elif guarddog_result.scan_failed:
         stages.append(StageSummary(
             name="guarddog", status=StageStatus.UNAVAILABLE,
@@ -158,8 +165,9 @@ def aggregate(
                 detail=f"{len(threats)} 'threat-*' rule(s) triggered: {rule_list}",
             ))
             reasons.append(f"GuardDog: suspicious behaviour detected in the code ({rule_list})")
-            if policy.block_on_any_threat_rule:
-                verdict = _escalate(verdict, Verdict.BLOCK)
+            verdict = _escalate(
+                verdict, Verdict.BLOCK if policy.block_on_any_threat_rule else Verdict.QUARANTINE
+            )
         else:
             stages.append(StageSummary(
                 name="guarddog", status=StageStatus.OK,
@@ -168,12 +176,19 @@ def aggregate(
 
     # --- deps.dev stage (reputation/hygiene) ---
     if depsdev_result is None:
-        stages.append(StageSummary(name="deps.dev", status=StageStatus.UNAVAILABLE, detail="not run"))
+        stages.append(_not_run("deps.dev", "depsdev" in skipped))
     elif depsdev_result.scan_failed:
         stages.append(StageSummary(
             name="deps.dev", status=StageStatus.UNAVAILABLE,
             detail=f"execution failed: {depsdev_result.error_message}",
         ))
+    elif depsdev_result.package_unknown:
+        stages.append(StageSummary(
+            name="deps.dev", status=StageStatus.SUSPECT, detail="package unknown to deps.dev",
+        ))
+        if policy.quarantine_on_unknown_package:
+            reasons.append("deps.dev: package unknown, possibly published very recently")
+            verdict = _escalate(verdict, Verdict.QUARANTINE)
     else:
         score = depsdev_result.scorecard_score
         dependents = depsdev_result.dependent_count or 0
@@ -195,6 +210,17 @@ def aggregate(
             detail = f"OpenSSF Scorecard score {score}/10" if score is not None else "score not available"
             stages.append(StageSummary(name="deps.dev", status=StageStatus.OK, detail=detail))
 
+    # --- Install-time code that no sandbox has watched (ADR-0003) ---
+    if install_hooks and policy.quarantine_on_undetonated_hook:
+        reasons.append(f"Install-time code was not detonated: {'; '.join(install_hooks)}")
+        verdict = _escalate(verdict, Verdict.QUARANTINE)
+
+    # --- Unavailable stages (ADR-0005) ---
+    unavailable = [s.name for s in stages if s.status == StageStatus.UNAVAILABLE]
+    if unavailable and policy.fail_closed:
+        reasons.append(f"Fail-closed policy: stage(s) unavailable ({', '.join(unavailable)})")
+        verdict = _escalate(verdict, Verdict.QUARANTINE)
+
     if not reasons:
         reasons.append("No suspicious signal on the stages that ran.")
 
@@ -202,6 +228,12 @@ def aggregate(
         package_name=package_name, version=version, ecosystem=ecosystem,
         verdict=verdict, reasons=reasons, stages=stages,
     )
+
+
+def _not_run(name: str, deliberately: bool) -> StageSummary:
+    if deliberately:
+        return StageSummary(name=name, status=StageStatus.SKIPPED, detail="skipped")
+    return StageSummary(name=name, status=StageStatus.UNAVAILABLE, detail="not run")
 
 
 _VERDICT_ORDER = [Verdict.ALLOW, Verdict.QUARANTINE, Verdict.BLOCK]

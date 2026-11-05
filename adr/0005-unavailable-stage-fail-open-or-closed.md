@@ -1,6 +1,6 @@
 # ADR-0005: Behaviour when a stage is unavailable
 
-Status: proposed · Date: 2026-11-05
+Status: accepted · Date: 2026-11-05
 
 ## Context
 Trivy and deps.dev depend on the network. Today an unavailable stage is marked
@@ -13,8 +13,8 @@ the critical path, this is a security choice to own.
 2. Fail-closed: at least one stage unavailable, so QUARANTINE.
 3. Configurable per policy, with fail-closed as the production default.
 
-## Proposed decision
-Option 3: add a parameter to `Policy` (for example `fail_closed`). Fail-open by
+## Decision
+Option 3: `Policy.fail_closed`. Fail-open by
 default for development and tests, fail-closed in production. Also distinguish
 "package unknown to deps.dev" (404, a signal in itself for a recent package)
 from a network failure.
@@ -24,5 +24,5 @@ from a network failure.
   check.
 − More quarantines to handle by hand during an outage: plan a Day 2 procedure
   (and result caching, ADR to come).
-− To implement and test (`test_aggregate_marks_unavailable_stage_distinctly`
-  already exists and serves as a base).
++ A stage skipped on purpose (`--skip`, local package) has its own `skipped`
+  status and does not count as an outage.

@@ -18,7 +18,8 @@ import pytest
 
 from airlock import pipeline
 from airlock.analysis import guarddog_scan
-from airlock.ingest.fetch import FetchError, fetch_local
+from airlock.ingest import fetch
+from airlock.ingest.fetch import FetchError, _safe_extract_tar, fetch_local, safe_slug
 from airlock.sbom.generate import build_sbom, sbom_to_json
 from airlock.verdict.aggregate import Verdict
 
@@ -120,17 +121,62 @@ def test_pipeline_local_clean_is_allowed(tmp_path, monkeypatch):
     assert _run("clean-pkg", tmp_path, monkeypatch) == Verdict.ALLOW
 
 
-def test_pipeline_local_benign_hook_is_allowed(tmp_path, monkeypatch):
-    assert _run("hook-benign", tmp_path, monkeypatch) == Verdict.ALLOW
+def test_pipeline_local_undetonated_hook_is_quarantined(tmp_path, monkeypatch):
+    """Static analysis cannot vouch for install-time code, even for a benign one."""
+    assert _run("hook-benign", tmp_path, monkeypatch) == Verdict.QUARANTINE
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known gap: the simulated postinstall only triggers capability-* rules, "
-        "ignored by the aggregation. Remove this marker once the "
-        "'capability in an install hook' rule is added."
-    ),
-)
 def test_pipeline_local_evil_postinstall_should_not_be_allowed(tmp_path, monkeypatch):
     assert _run("hook-evil-sim", tmp_path, monkeypatch) != Verdict.ALLOW
+
+
+def test_install_hooks_are_detected(tmp_path):
+    pkg = fetch_local("npm", _pack("hook-evil-sim", tmp_path), workdir=tmp_path / "w")
+    assert pkg.install_hooks == ["postinstall: node scripts/postinstall.js"]
+    clean = fetch_local("npm", _pack("clean-pkg", tmp_path), workdir=tmp_path / "c")
+    assert clean.install_hooks == []
+
+
+def _tar_with(path: Path, *members: tarfile.TarInfo) -> Path:
+    with tarfile.open(path, "w:gz") as tar:
+        for member in members:
+            tar.addfile(member, io.BytesIO(b"x" * member.size))
+    return path
+
+
+def test_fetch_local_blocks_sibling_prefix_escape(tmp_path):
+    """`w-evil` starts with `w`: a plain string prefix check would let it through."""
+    member = tarfile.TarInfo(name="../w-evil/file.txt")
+    member.size = 1
+    with pytest.raises(FetchError):
+        _safe_extract_tar(_tar_with(tmp_path / "a.tgz", member), _mkdir(tmp_path / "w"))
+
+
+def test_extraction_drops_symlinks(tmp_path):
+    link = tarfile.TarInfo(name="package/link")
+    link.type = tarfile.SYMTYPE
+    link.linkname = "/etc/passwd"
+    regular = tarfile.TarInfo(name="package/file.txt")
+    regular.size = 1
+    dest = _mkdir(tmp_path / "w")
+    _safe_extract_tar(_tar_with(tmp_path / "a.tgz", link, regular), dest)
+    assert (dest / "package/file.txt").is_file()
+    assert not (dest / "package/link").is_symlink()
+
+
+def test_extraction_refuses_archive_bomb(tmp_path, monkeypatch):
+    monkeypatch.setattr(fetch, "MAX_EXTRACTED_BYTES", 10)
+    member = tarfile.TarInfo(name="package/big")
+    member.size = 11
+    with pytest.raises(FetchError):
+        _safe_extract_tar(_tar_with(tmp_path / "a.tgz", member), _mkdir(tmp_path / "w"))
+
+
+def test_safe_slug_neutralises_path_separators():
+    assert "/" not in safe_slug("../../etc/cron.d/x")
+    assert not safe_slug("..").startswith(".")
+
+
+def _mkdir(path: Path) -> Path:
+    path.mkdir()
+    return path
