@@ -1,7 +1,9 @@
 # Pure Python dependencies of the project.
 # Trivy (a Go binary) is installed separately: see README.md.
+# Versions tested on Python 3.12. GuardDog is pinned to a major range because
+# the pipeline uses its internal API, which can change between majors (ADR-0002).
 
-requests>=2.31
-cyclonedx-python-lib>=8.0
-packageurl-python>=0.15
-guarddog>=1.0
+requests>=2.31,<3
+cyclonedx-python-lib>=8,<12
+packageurl-python>=0.15,<1
+guarddog>=3.2,<4
