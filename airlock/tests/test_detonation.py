@@ -36,11 +36,25 @@ def test_sink_finds_base64_encoded_canary():
     assert findings
 
 
-def test_sink_finds_hex_canary_split_over_dns_labels():
+def test_sink_reassembles_canary_split_across_dns_queries():
+    """The home-made grabber chunks hex across many queries to one base domain."""
     hexa = f"token={CANARY}".encode().hex()
-    name = f"{hexa[:30]}.{hexa[30:]}.collect.example.invalid"
-    findings, names = analyse_sink_log(_dns_line(name), CANARY)
-    assert findings and names == [name]
+    chunks = [hexa[i:i + 20] for i in range(0, len(hexa), 20)]
+    log = "\n".join(_dns_line(f"{chunk}.exfil.example.invalid") for chunk in chunks)
+    findings, names = analyse_sink_log(log, CANARY)
+    assert [f.rule for f in findings] == ["canary_exfiltrated"]
+    assert len(names) == len(chunks)
+
+
+def test_sink_does_not_merge_two_different_base_domains():
+    """Chunks must reassemble per domain, not across unrelated queries."""
+    hexa = f"token={CANARY}".encode().hex()
+    log = "\n".join([
+        _dns_line(f"{hexa[:20]}.one.example.invalid"),
+        _dns_line(f"{hexa[20:]}.two.example.invalid"),
+    ])
+    findings, _ = analyse_sink_log(log, CANARY)
+    assert findings == []
 
 
 def test_sink_ignores_traffic_without_canary():

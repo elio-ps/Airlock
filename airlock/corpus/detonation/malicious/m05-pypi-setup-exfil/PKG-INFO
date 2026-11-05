@@ -1,0 +1,4 @@
+Metadata-Version: 2.1
+Name: airlock-sim-setup-exfil
+Version: 1.0.0
+Summary: Airlock detonation fixture (simulated, inert outside the sandbox)

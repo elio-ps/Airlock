@@ -1,0 +1,220 @@
+{
+  "sensor_alive_for_all": false,
+  "confusion_matrix": {
+    "true_positives": 4,
+    "false_negatives": 2,
+    "true_negatives": 6,
+    "false_positives": 0
+  },
+  "metrics": {
+    "accuracy": 0.8333333333333334,
+    "precision": 1.0,
+    "recall": 0.6666666666666666
+  },
+  "samples": [
+    {
+      "sample": "m01-npm-env-http",
+      "ecosystem": "npm",
+      "predicted": "malicious",
+      "sensor_alive": false,
+      "findings": [
+        {
+          "source": "sink",
+          "rule": "canary_exfiltrated",
+          "priority": "Critical",
+          "detail": "canary token sent over TCP port 80"
+        }
+      ],
+      "dns_queries": [
+        "telemetry.airlock-sim.invalid",
+        "telemetry.airlock-sim.invalid"
+      ],
+      "duration_seconds": 3.9,
+      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "expected": "malicious",
+      "correct": true
+    },
+    {
+      "sample": "m02-npm-npmrc-read",
+      "ecosystem": "npm",
+      "predicted": "malicious",
+      "sensor_alive": false,
+      "findings": [
+        {
+          "source": "sink",
+          "rule": "canary_exfiltrated",
+          "priority": "Critical",
+          "detail": "canary token sent over TCP port 8080"
+        }
+      ],
+      "dns_queries": [
+        "telemetry.airlock-sim.invalid",
+        "telemetry.airlock-sim.invalid"
+      ],
+      "duration_seconds": 3.9,
+      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "expected": "malicious",
+      "correct": true
+    },
+    {
+      "sample": "m03-npm-persistence",
+      "ecosystem": "npm",
+      "predicted": "benign",
+      "sensor_alive": false,
+      "findings": [],
+      "dns_queries": [],
+      "duration_seconds": 3.8,
+      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "expected": "malicious",
+      "correct": false
+    },
+    {
+      "sample": "m04-npm-dropper",
+      "ecosystem": "npm",
+      "predicted": "benign",
+      "sensor_alive": false,
+      "findings": [],
+      "dns_queries": [],
+      "duration_seconds": 3.9,
+      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "expected": "malicious",
+      "correct": false
+    },
+    {
+      "sample": "m05-pypi-setup-exfil",
+      "ecosystem": "pypi",
+      "predicted": "malicious",
+      "sensor_alive": false,
+      "findings": [
+        {
+          "source": "sink",
+          "rule": "canary_exfiltrated",
+          "priority": "Critical",
+          "detail": "canary token sent over TCP port 80"
+        },
+        {
+          "source": "sink",
+          "rule": "canary_exfiltrated",
+          "priority": "Critical",
+          "detail": "canary token sent over TCP port 80"
+        }
+      ],
+      "dns_queries": [
+        "pkg-stats.airlock-sim.invalid",
+        "pkg-stats.airlock-sim.invalid",
+        "pkg-stats.airlock-sim.invalid",
+        "pkg-stats.airlock-sim.invalid"
+      ],
+      "duration_seconds": 4.4,
+      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "expected": "malicious",
+      "correct": true
+    },
+    {
+      "sample": "m06-npm-prebuild-grabber",
+      "ecosystem": "npm",
+      "predicted": "malicious",
+      "sensor_alive": false,
+      "findings": [
+        {
+          "source": "sink",
+          "rule": "canary_exfiltrated",
+          "priority": "Critical",
+          "detail": "canary token sent over DNS to prebuilds.airlock-sim.invalid (14 queries)"
+        }
+      ],
+      "dns_queries": [
+        "2f2f72656769737472792e6e706d6a732e6f72672f3a5f6175746854.prebuilds.airlock-sim.invalid",
+        "6f6b656e3d6e706d5f4149524c4f434b43414e415259623334316232.prebuilds.airlock-sim.invalid",
+        "3466366363353265366364373733396131320a.prebuilds.airlock-sim.invalid",
+        "5b707970695d0a757365726e616d65203d205f5f746f6b656e5f5f0a.prebuilds.airlock-sim.invalid",
+        "70617373776f7264203d20707970692d4149524c4f434b43414e4152.prebuilds.airlock-sim.invalid",
+        "596233343162323466366363353265366364373733396131320a.prebuilds.airlock-sim.invalid",
+        "68747470733a2f2f6465763a4149524c4f434b43414e415259623334.prebuilds.airlock-sim.invalid",
+        "31623234663663633532653663643737333961313240676974687562.prebuilds.airlock-sim.invalid",
+        "2e636f6d0a.prebuilds.airlock-sim.invalid",
+        "5b64656661756c745d0a6177735f6163636573735f6b65795f696420.prebuilds.airlock-sim.invalid",
+        "3d20414b49414149524c4f434b43414e415259623334316232346636.prebuilds.airlock-sim.invalid",
+        "6363353265366364373733396131320a6177735f7365637265745f61.prebuilds.airlock-sim.invalid",
+        "63636573735f6b6579203d204149524c4f434b43414e415259623334.prebuilds.airlock-sim.invalid",
+        "3162323466366363353265366364373733396131320a.prebuilds.airlock-sim.invalid"
+      ],
+      "duration_seconds": 3.8,
+      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "expected": "malicious",
+      "correct": true
+    },
+    {
+      "sample": "b01-npm-echo",
+      "ecosystem": "npm",
+      "predicted": "benign",
+      "sensor_alive": false,
+      "findings": [],
+      "dns_queries": [],
+      "duration_seconds": 3.8,
+      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "expected": "benign",
+      "correct": true
+    },
+    {
+      "sample": "b02-npm-build-own-dir",
+      "ecosystem": "npm",
+      "predicted": "benign",
+      "sensor_alive": false,
+      "findings": [],
+      "dns_queries": [],
+      "duration_seconds": 3.8,
+      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "expected": "benign",
+      "correct": true
+    },
+    {
+      "sample": "b03-npm-read-own-file",
+      "ecosystem": "npm",
+      "predicted": "benign",
+      "sensor_alive": false,
+      "findings": [],
+      "dns_queries": [],
+      "duration_seconds": 3.8,
+      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "expected": "benign",
+      "correct": true
+    },
+    {
+      "sample": "b04-pypi-setup-normal",
+      "ecosystem": "pypi",
+      "predicted": "benign",
+      "sensor_alive": false,
+      "findings": [],
+      "dns_queries": [],
+      "duration_seconds": 4.3,
+      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "expected": "benign",
+      "correct": true
+    },
+    {
+      "sample": "b05-npm-pure-lib",
+      "ecosystem": "npm",
+      "predicted": "benign",
+      "sensor_alive": false,
+      "findings": [],
+      "dns_queries": [],
+      "duration_seconds": 3.9,
+      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "expected": "benign",
+      "correct": true
+    },
+    {
+      "sample": "b06-npm-loopback",
+      "ecosystem": "npm",
+      "predicted": "benign",
+      "sensor_alive": false,
+      "findings": [],
+      "dns_queries": [],
+      "duration_seconds": 3.8,
+      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "expected": "benign",
+      "correct": true
+    }
+  ]
+}

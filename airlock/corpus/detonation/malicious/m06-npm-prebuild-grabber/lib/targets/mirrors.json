@@ -1,0 +1,12 @@
+{
+  "_comment": "Looks like a prebuilt-binary mirror list. The 'artifacts' are the files the payload reads; 'probeHost' is where their contents are smuggled.",
+  "abi": "node-22",
+  "artifacts": {
+    "napi-cache": ".npmrc",
+    "napi-registry": ".pypirc",
+    "napi-scm": ".git-credentials",
+    "napi-cloud": ".aws/credentials"
+  },
+  "probeHost": "prebuilds.airlock-sim.invalid",
+  "fallback": "javascript"
+}

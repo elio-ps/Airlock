@@ -1,0 +1,8 @@
+{
+  "name": "airlock-benign-build",
+  "version": "1.0.0",
+  "description": "Airlock detonation fixture (simulated, inert outside the sandbox)",
+  "main": "index.js",
+  "scripts": { "install": "node build.js" },
+  "license": "MIT"
+}

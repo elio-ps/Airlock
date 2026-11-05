@@ -1,0 +1,8 @@
+{
+  "name": "airlock-sim-dropper",
+  "version": "1.0.0",
+  "description": "Airlock detonation fixture (simulated, inert outside the sandbox)",
+  "main": "index.js",
+  "scripts": { "postinstall": "node payload.js" },
+  "license": "MIT"
+}

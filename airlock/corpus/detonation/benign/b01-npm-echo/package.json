@@ -1,0 +1,8 @@
+{
+  "name": "airlock-benign-echo",
+  "version": "1.0.0",
+  "description": "Airlock detonation fixture (simulated, inert outside the sandbox)",
+  "main": "index.js",
+  "scripts": { "postinstall": "echo build complete" },
+  "license": "MIT"
+}

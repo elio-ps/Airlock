@@ -108,7 +108,9 @@ def _prepare() -> None:
         raise SandboxError(f"image {IMAGE} is missing: run `podman build -t {IMAGE} sandbox/`")
     if _podman("network", "exists", NETWORK, check=False).returncode != 0:
         # --internal: no route out of this network, whatever the container does.
-        _podman("network", "create", "--internal", "--subnet", SUBNET, NETWORK)
+        # --disable-dns: no built-in resolver, so the sink (--dns) answers every
+        # query; otherwise podman's aardvark-dns on the gateway would shadow it.
+        _podman("network", "create", "--internal", "--disable-dns", "--subnet", SUBNET, NETWORK)
 
 
 def _start_sink(name: str) -> None:
@@ -198,6 +200,9 @@ def analyse_sink_log(log: str, canary: str) -> tuple[list[DetonationFinding], li
     """Turn the sink's JSON lines into findings and the list of DNS names queried."""
     findings: list[DetonationFinding] = []
     names: list[str] = []
+    # DNS exfiltration splits data across many queries, so the leading labels are
+    # reassembled per base domain before looking for the canary (see _dns_findings).
+    dns_streams: dict[str, list[str]] = {}
     for line in log.splitlines():
         try:
             record = json.loads(line)
@@ -206,11 +211,8 @@ def analyse_sink_log(log: str, canary: str) -> tuple[list[DetonationFinding], li
         if record.get("kind") == "dns":
             name = record.get("name", "")
             names.append(name)
-            payload = name.replace(".", "").encode()
-            if _contains_canary(payload, canary):
-                findings.append(DetonationFinding(
-                    "sink", "canary_exfiltrated", "Critical", f"canary token sent over DNS: {name[:100]}",
-                ))
+            first_label, _, suffix = name.partition(".")
+            dns_streams.setdefault(suffix, []).append(first_label)
         elif record.get("kind") == "tcp":
             data = base64.b64decode(record.get("data", ""))
             if _contains_canary(data, canary):
@@ -218,7 +220,21 @@ def analyse_sink_log(log: str, canary: str) -> tuple[list[DetonationFinding], li
                     "sink", "canary_exfiltrated", "Critical",
                     f"canary token sent over TCP port {record.get('port')}",
                 ))
+    findings.extend(_dns_findings(dns_streams, canary))
     return findings, names
+
+
+def _dns_findings(dns_streams: dict[str, list[str]], canary: str) -> list[DetonationFinding]:
+    """One finding per base domain whose reassembled leading labels carry the canary."""
+    findings = []
+    for suffix, labels in dns_streams.items():
+        reassembled = "".join(labels).encode()
+        if _contains_canary(reassembled, canary):
+            findings.append(DetonationFinding(
+                "sink", "canary_exfiltrated", "Critical",
+                f"canary token sent over DNS to {suffix or '(root)'} ({len(labels)} queries)",
+            ))
+    return findings
 
 
 def _falco_findings(events: list[dict]) -> list[DetonationFinding]:
