@@ -4,7 +4,7 @@ airlock.pipeline
 
 Orchestrates the package analysis:
 
-    ingestion -> SBOM -> Trivy -> GuardDog -> deps.dev -> verdict
+    ingestion -> SBOM -> Trivy -> GuardDog -> deps.dev -> detonation -> verdict
 
 Usage:
     python3 -m airlock.pipeline pypi requests --version 2.31.0
@@ -27,6 +27,7 @@ import tempfile
 from pathlib import Path
 
 from airlock.analysis import depsdev, guarddog_scan, trivy_scan
+from airlock.detonation import sandbox
 from airlock.ingest.fetch import FetchError, fetch_local, fetch_package, safe_slug
 from airlock.sbom.generate import generate_sbom_file
 from airlock.verdict.aggregate import Policy, aggregate
@@ -133,12 +134,23 @@ def _run_stages(ecosystem, name, version, skip, policy, log,
         else:
             log(f"  -> Scorecard={depsdev_result.scorecard_score}")
 
-    # --- 6. Verdict ---
+    # --- 6. Detonation ---
+    detonation_result = None
+    if "detonation" not in skip:
+        log("Detonation in the sandbox (behaviour)...")
+        detonation_result = sandbox.detonate(pkg.archive_path, pkg.ecosystem)
+        if detonation_result.scan_failed:
+            log(f"  -> unavailable: {detonation_result.error_message[:150]}")
+        log(f"  -> {len(detonation_result.findings)} behaviour(s) observed "
+            f"in {detonation_result.duration_seconds}s")
+
+    # --- 7. Verdict ---
     log("Aggregating the verdict...")
     verdict = aggregate(
         package_name=pkg.name, version=pkg.version, ecosystem=pkg.ecosystem,
         trivy_result=trivy_result, guarddog_result=guarddog_result,
-        depsdev_result=depsdev_result, sbom_path=sbom_path, policy=policy,
+        depsdev_result=depsdev_result, detonation_result=detonation_result,
+        sbom_path=sbom_path, policy=policy,
         skipped=skip, install_hooks=pkg.install_hooks,
     )
     log(f"  -> VERDICT: {verdict.verdict.value.upper()}")
@@ -151,6 +163,7 @@ def _run_stages(ecosystem, name, version, skip, policy, log,
             "trivy": trivy_result.to_dict() if trivy_result else None,
             "guarddog": guarddog_result.to_dict() if guarddog_result else None,
             "depsdev": depsdev_result.to_dict() if depsdev_result else None,
+            "detonation": detonation_result.to_dict() if detonation_result else None,
         },
     }
     report_path = run_dir / "report.json"
@@ -170,7 +183,7 @@ def main() -> None:
                          help="analyse a local archive (.tgz from `npm pack "
                               "--ignore-scripts`) instead of downloading a package; npm only")
     parser.add_argument("--skip", default="", help="comma-separated stages to skip "
-                                                     "(sbom,trivy,guarddog,depsdev)")
+                                                     "(sbom,trivy,guarddog,depsdev,detonation)")
     parser.add_argument("--policy", type=Path, default=None, help="custom JSON policy file")
     parser.add_argument("--trivy-timeout", type=int, default=120,
                          help="Trivy timeout in seconds (default 120; raise it for the "

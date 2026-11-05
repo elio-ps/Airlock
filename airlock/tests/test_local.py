@@ -111,7 +111,7 @@ def test_guarddog_local_evil_sim_raises_capability_signals(tmp_path):
 def _run(fixture: str, tmp_path, monkeypatch) -> Verdict:
     monkeypatch.setattr(pipeline, "WORKDIR_ROOT", tmp_path / "runs")
     report = pipeline.run_pipeline(
-        "npm", skip={"trivy"}, verbose=False,
+        "npm", skip={"trivy", "detonation"}, verbose=False,
         local_archive=_pack(fixture, tmp_path),
     )
     return Verdict(report["verdict"]["verdict"])

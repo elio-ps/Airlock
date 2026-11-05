@@ -149,9 +149,10 @@ def test_aggregate_allow_when_all_clean():
         trivy_result=_FakeTrivyResult([]),
         guarddog_result=_FakeGuardDogResult([], issue_count=0),
         depsdev_result=_FakeDepsDevResult(scorecard_score=8.5, dependent_count=500),
+        skipped={"detonation"},
     )
     assert verdict.verdict == Verdict.ALLOW
-    assert all(s.status != StageStatus.UNAVAILABLE for s in verdict.stages if s.name != "sbom")
+    assert all(s.status != StageStatus.UNAVAILABLE for s in verdict.stages)
 
 
 def test_aggregate_quarantine_on_guarddog_threat():
@@ -239,7 +240,7 @@ def test_fail_closed_policy_ignores_deliberately_skipped_stages():
     verdict = aggregate(
         package_name="pkg", version="1.0.0", ecosystem="npm",
         guarddog_result=_FakeGuardDogResult([]),
-        policy=Policy(fail_closed=True), skipped={"trivy", "depsdev"},
+        policy=Policy(fail_closed=True), skipped={"trivy", "depsdev", "detonation"},
     )
     assert verdict.verdict == Verdict.ALLOW
     assert {s.name: s.status for s in verdict.stages}["trivy"] == StageStatus.SKIPPED

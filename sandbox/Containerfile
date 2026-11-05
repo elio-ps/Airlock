@@ -1,0 +1,20 @@
+# Disposable detonation image: looks like a developer machine, holds nothing real.
+# The base image is pinned by digest so that the sandbox is reproducible.
+FROM docker.io/library/node:22-bookworm-slim@sha256:9f0dde62d10e7ff7a310ecaebd66225f6b46c17e6cb778449a77b05d3541bea2
+
+# Tools a real developer machine has: malware expects them, and their use is observed.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      python3 python3-pip python3-setuptools python3-wheel \
+      ca-certificates curl wget git netcat-openbsd procps \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --uid 1500 --create-home --shell /bin/bash dev
+
+COPY detonate.sh sink.py /opt/airlock/
+RUN chmod 0555 /opt/airlock/detonate.sh \
+ && echo "airlock falco liveness sentinel" > /opt/airlock/sentinel \
+ && chmod 0444 /opt/airlock/sentinel
+
+USER dev
+WORKDIR /home/dev

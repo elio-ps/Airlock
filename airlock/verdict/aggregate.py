@@ -2,8 +2,8 @@
 airlock.verdict.aggregate
 ============================
 
-Combines the signals of the stages (SBOM, Trivy, GuardDog, deps.dev) into a
-single, structured and JUSTIFIED verdict: each decision can be explained to a
+Combines the signals of the stages (SBOM, Trivy, GuardDog, deps.dev, detonation)
+into a single, structured and JUSTIFIED verdict: each decision can be explained to a
 human, it is not an opaque score.
 
 Design principle: an UNAVAILABLE signal (e.g. Trivy without its DB) must never
@@ -11,10 +11,12 @@ be mistaken for a clean signal. Each stage has three explicit states:
 OK / SUSPECT / UNAVAILABLE.
 
 The final verdict follows simple, deliberately readable logic:
+  - behaviour observed at detonation: Critical => BLOCK, Warning => QUARANTINE
   - one GuardDog "threat-*" rule => QUARANTINE (a static pattern, not a proof)
   - a CRITICAL/HIGH CVE => QUARANTINE
   - a very low OpenSSF Scorecard (< 3/10) on a little-used package =>
     QUARANTINE (weak project hygiene)
+  - install-time code that was not detonated => QUARANTINE
   - otherwise => ALLOW
 Thresholds live in `Policy` so they can be tuned without touching the logic.
 """
@@ -54,6 +56,8 @@ class Policy:
     quarantine_on_unknown_package: bool = True  # unknown to deps.dev: typically brand new
     quarantine_on_undetonated_hook: bool = True  # install-time code nobody watched run
     fail_closed: bool = False  # an unavailable stage means QUARANTINE (ADR-0005)
+    block_on_detonation_priority: tuple[str, ...] = ("Emergency", "Alert", "Critical")
+    quarantine_on_detonation_priority: tuple[str, ...] = ("Error", "Warning")
 
     @classmethod
     def from_file(cls, path: Path) -> "Policy":
@@ -104,6 +108,7 @@ def aggregate(
     trivy_result=None,       # airlock.analysis.trivy_scan.TrivyResult | None
     guarddog_result=None,    # airlock.analysis.guarddog_scan.GuardDogResult | None
     depsdev_result=None,     # airlock.analysis.depsdev.DepsDevResult | None
+    detonation_result=None,  # airlock.detonation.sandbox.DetonationResult | None
     sbom_path: Path | None = None,
     policy: Policy | None = None,
     skipped: frozenset[str] | set[str] = frozenset(),
@@ -210,8 +215,40 @@ def aggregate(
             detail = f"OpenSSF Scorecard score {score}/10" if score is not None else "score not available"
             stages.append(StageSummary(name="deps.dev", status=StageStatus.OK, detail=detail))
 
-    # --- Install-time code that no sandbox has watched (ADR-0003) ---
-    if install_hooks and policy.quarantine_on_undetonated_hook:
+    # --- Detonation stage (observed behaviour, the only proof that can BLOCK) ---
+    detonated = False
+    if detonation_result is None:
+        stages.append(_not_run("detonation", "detonation" in skipped))
+    else:
+        # Findings count even when the sensor was blind: the sink is a separate witness.
+        blocking = [f for f in detonation_result.findings
+                    if f.priority in policy.block_on_detonation_priority]
+        doubtful = [f for f in detonation_result.findings
+                    if f.priority in policy.quarantine_on_detonation_priority]
+        detonated = not detonation_result.scan_failed
+        if blocking or doubtful:
+            rules = ", ".join(sorted({f.rule for f in blocking + doubtful}))
+            stages.append(StageSummary(
+                name="detonation", status=StageStatus.SUSPECT, detail=f"behaviour observed: {rules}",
+            ))
+        elif detonated:
+            stages.append(StageSummary(
+                name="detonation", status=StageStatus.OK, detail="no suspicious behaviour observed",
+            ))
+        else:
+            stages.append(StageSummary(
+                name="detonation", status=StageStatus.UNAVAILABLE,
+                detail=f"execution failed: {detonation_result.error_message}",
+            ))
+        if blocking:
+            reasons.extend(f"Detonation: {f.rule} ({f.detail})" for f in blocking)
+            verdict = _escalate(verdict, Verdict.BLOCK)
+        if doubtful:
+            reasons.extend(f"Detonation: {f.rule} ({f.detail})" for f in doubtful)
+            verdict = _escalate(verdict, Verdict.QUARANTINE)
+
+    # --- Install-time code that no sandbox has watched (ADR-0008) ---
+    if install_hooks and policy.quarantine_on_undetonated_hook and not detonated:
         reasons.append(f"Install-time code was not detonated: {'; '.join(install_hooks)}")
         verdict = _escalate(verdict, Verdict.QUARANTINE)
 

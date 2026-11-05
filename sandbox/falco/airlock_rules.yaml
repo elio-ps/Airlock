@@ -1,0 +1,102 @@
+# Airlock detection rules: behaviours, not signatures.
+#
+# Priorities drive the verdict (see airlock/verdict/aggregate.py):
+#   CRITICAL -> proof of malicious behaviour, BLOCK
+#   WARNING  -> legitimate installers may do this, QUARANTINE
+#   INFORMATIONAL -> harness only, no effect
+#
+# Only containers are watched. The host side keeps only the events of the
+# container under analysis, and drops everything before the sentinel.
+
+- macro: airlock_in_container
+  condition: (container.id != host and container.id != "")
+
+- macro: airlock_read
+  condition: (evt.type in (open, openat, openat2) and evt.is_open_read=true and fd.typechar='f')
+
+- macro: airlock_write
+  condition: (evt.type in (open, openat, openat2) and evt.is_open_write=true and fd.typechar='f')
+
+- macro: airlock_exec
+  condition: (evt.type in (execve, execveat) and evt.res=SUCCESS)
+
+- list: airlock_decoy_files
+  items:
+    - /home/dev/.aws/credentials
+    - /home/dev/.ssh/id_rsa
+    - /home/dev/.npmrc
+    - /home/dev/.pypirc
+    - /home/dev/.git-credentials
+    - /home/dev/.netrc
+    - /home/dev/.config/gh/hosts.yml
+    - /home/dev/.docker/config.json
+    - /home/dev/.kube/config
+
+- list: airlock_persistence_files
+  items:
+    - /home/dev/.bashrc
+    - /home/dev/.profile
+    - /home/dev/.bash_profile
+    - /home/dev/.zshrc
+    - /home/dev/.ssh/authorized_keys
+
+- list: airlock_network_tools
+  items: [curl, wget, nc, ncat, netcat, socat, telnet, ssh, scp]
+
+- rule: airlock_sentinel
+  desc: Liveness proof, the harness reads this file at the start of each detonation
+  condition: airlock_read and airlock_in_container and fd.name=/opt/airlock/sentinel
+  output: sentinel seen (container=%container.id)
+  priority: INFORMATIONAL
+  tags: [airlock]
+
+- rule: airlock_decoy_secret_read
+  desc: A decoy credential file was opened; no installer has a reason to do so
+  condition: airlock_read and airlock_in_container and fd.name in (airlock_decoy_files)
+  output: decoy secret read (file=%fd.name proc=%proc.name cmd=%proc.cmdline parent=%proc.pname container=%container.id)
+  priority: CRITICAL
+  tags: [airlock, credential_access]
+
+- rule: airlock_process_environ_read
+  desc: Reading the environment of a process through /proc
+  condition: airlock_read and airlock_in_container and fd.name glob "/proc/*/environ"
+  output: process environment read (file=%fd.name proc=%proc.name cmd=%proc.cmdline container=%container.id)
+  priority: CRITICAL
+  tags: [airlock, credential_access]
+
+- rule: airlock_persistence_write
+  desc: A shell startup file or an authorized_keys file was modified
+  condition: >
+    airlock_write and airlock_in_container and
+    (fd.name in (airlock_persistence_files)
+     or fd.name startswith /home/dev/.config/autostart/
+     or fd.name startswith /home/dev/.config/systemd/user/)
+  output: persistence write (file=%fd.name proc=%proc.name cmd=%proc.cmdline container=%container.id)
+  priority: CRITICAL
+  tags: [airlock, persistence]
+
+- rule: airlock_exec_from_writable_dir
+  desc: A program dropped in a temporary or home directory was executed
+  condition: >
+    airlock_exec and airlock_in_container and
+    (proc.exe startswith /tmp/ or proc.exe startswith /dev/shm/ or proc.exe startswith /home/dev/
+     or proc.exepath startswith /tmp/ or proc.exepath startswith /dev/shm/ or proc.exepath startswith /home/dev/)
+  output: dropped program executed (exe=%proc.exepath cmd=%proc.cmdline parent=%proc.pname container=%container.id)
+  priority: CRITICAL
+  tags: [airlock, execution]
+
+- rule: airlock_outbound_connection
+  desc: A process contacted a remote host during installation
+  condition: >
+    evt.type=connect and airlock_in_container and
+    (fd.typechar=4 or fd.typechar=6) and fd.sip != "127.0.0.1" and fd.sip != "::1"
+  output: outbound connection (dest=%fd.sip port=%fd.sport proc=%proc.name cmd=%proc.cmdline container=%container.id)
+  priority: WARNING
+  tags: [airlock, network]
+
+- rule: airlock_network_tool_exec
+  desc: A network tool was started during installation
+  condition: airlock_exec and airlock_in_container and proc.name in (airlock_network_tools)
+  output: network tool started (cmd=%proc.cmdline parent=%proc.pname container=%container.id)
+  priority: WARNING
+  tags: [airlock, network]
