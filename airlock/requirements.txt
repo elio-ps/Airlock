@@ -1,5 +1,5 @@
-# Dépendances Python pures du projet.
-# Trivy (binaire Go) s'installe séparément : voir README.md.
+# Pure Python dependencies of the project.
+# Trivy (a Go binary) is installed separately: see README.md.
 
 requests>=2.31
 cyclonedx-python-lib>=8.0

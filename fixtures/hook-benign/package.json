@@ -1,7 +1,7 @@
 {
   "name": "airlock-test-hook-benign",
   "version": "1.0.0",
-  "description": "Fixture Airlock : hook postinstall legitime (simple message de build)",
+  "description": "Airlock fixture: legitimate postinstall hook (plain build message)",
   "main": "index.js",
   "scripts": {
     "postinstall": "echo build ok"

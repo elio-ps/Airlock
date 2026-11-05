@@ -1,7 +1,7 @@
 {
   "name": "airlock-test-evil-sim",
   "version": "1.0.0",
-  "description": "FIXTURE DE TEST Airlock : simule un postinstall malveillant, inoffensif (localhost + canari uniquement)",
+  "description": "Airlock TEST FIXTURE: simulates a malicious postinstall, harmless (localhost and canary only)",
   "main": "index.js",
   "scripts": {
     "postinstall": "node scripts/postinstall.js"

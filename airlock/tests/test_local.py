@@ -1,11 +1,11 @@
 """
-Tests du mode d'ingestion LOCALE (`--local`) et des fixtures de postinstall.
+Tests for LOCAL ingestion (`--local`) and the postinstall fixtures.
 
-Aucun appel réseau vers les registres : les archives .tgz sont fabriquées à
-la volée depuis `fixtures/` avec le même layout que `npm pack` (tout sous
-`package/`), donc ni npm ni Node ne sont nécessaires pour lancer ces tests.
+No registry calls: .tgz archives are built on the fly from `fixtures/` with the
+same layout as `npm pack` (everything under `package/`), so neither npm nor
+Node is needed.
 
-Lancer : python3 -m pytest airlock/tests/test_local.py -v
+Run: python3 -m pytest airlock/tests/test_local.py -v
 """
 
 from __future__ import annotations
@@ -26,9 +26,9 @@ FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
 
 
 def _pack(fixture: str, dest_dir: Path) -> Path:
-    """Équivalent de `npm pack --ignore-scripts` : archive avec préfixe `package/`."""
+    """Equivalent of `npm pack --ignore-scripts`: archive with a `package/` prefix."""
     src = FIXTURES / fixture
-    assert src.is_dir(), f"fixture manquante : {src}"
+    assert src.is_dir(), f"missing fixture: {src}"
     name = {
         "clean-pkg": "airlock-test-clean",
         "hook-benign": "airlock-test-hook-benign",
@@ -43,7 +43,7 @@ def _pack(fixture: str, dest_dir: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Ingestion locale
+# Local ingestion
 # ---------------------------------------------------------------------------
 
 def test_fetch_local_reads_name_and_version(tmp_path):
@@ -62,7 +62,7 @@ def test_fetch_local_sbom_needs_no_network(tmp_path):
 
 def test_fetch_local_missing_archive_raises(tmp_path):
     with pytest.raises(FetchError):
-        fetch_local("npm", tmp_path / "nexiste-pas.tgz")
+        fetch_local("npm", tmp_path / "does-not-exist.tgz")
 
 
 def test_fetch_local_rejects_pypi(tmp_path):
@@ -83,7 +83,7 @@ def test_fetch_local_blocks_path_traversal(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# GuardDog en local (règles "sourcecode" uniquement, pas de réseau requis)
+# Local GuardDog ("sourcecode" rules only, no network needed)
 # ---------------------------------------------------------------------------
 
 def test_guarddog_local_clean_package_has_no_findings(tmp_path):
@@ -94,7 +94,7 @@ def test_guarddog_local_clean_package_has_no_findings(tmp_path):
 
 
 def test_guarddog_local_evil_sim_raises_capability_signals(tmp_path):
-    """Le postinstall simulé est vu par GuardDog (réseau + spawn), au moins en capability."""
+    """GuardDog sees the simulated postinstall (network + spawn), at least as capability."""
     pkg = fetch_local("npm", _pack("hook-evil-sim", tmp_path), workdir=tmp_path / "w")
     result = guarddog_scan.scan_local(pkg.ecosystem, pkg.source_root, pkg.name, pkg.version)
     assert not result.scan_failed
@@ -104,7 +104,7 @@ def test_guarddog_local_evil_sim_raises_capability_signals(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Pipeline de bout en bout sur les fixtures (Trivy et deps.dev sautés)
+# End-to-end pipeline on fixtures (Trivy and deps.dev skipped)
 # ---------------------------------------------------------------------------
 
 def _run(fixture: str, tmp_path, monkeypatch) -> Verdict:
@@ -127,9 +127,9 @@ def test_pipeline_local_benign_hook_is_allowed(tmp_path, monkeypatch):
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "Trou connu : le postinstall simulé ne déclenche que des règles capability-*, "
-        "ignorées par l'agrégation. Retirer ce marqueur une fois la règle "
-        "'capability dans un hook d'installation' ajoutée."
+        "Known gap: the simulated postinstall only triggers capability-* rules, "
+        "ignored by the aggregation. Remove this marker once the "
+        "'capability in an install hook' rule is added."
     ),
 )
 def test_pipeline_local_evil_postinstall_should_not_be_allowed(tmp_path, monkeypatch):

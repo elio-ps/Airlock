@@ -1,10 +1,8 @@
 """
-Tests unitaires. Les tests marqués `network` font de vrais appels réseau
-(registres npm/PyPI) — c'est volontaire pour cet étage du projet : on
-teste l'intégration réelle plutôt que de tout mocker, cohérent avec la
-philosophie "détonation sur de vrais paquets" du brief.
+Unit tests. Tests marked `network` make real calls to the npm and PyPI
+registries on purpose: they test real integration rather than mocks.
 
-Lancer : python3 -m pytest airlock/tests/ -v
+Run: python3 -m pytest airlock/tests/ -v
 """
 
 from __future__ import annotations
@@ -26,7 +24,7 @@ from airlock.verdict.aggregate import (
 
 
 # ---------------------------------------------------------------------------
-# Ingestion (réseau réel, registres publics)
+# Ingestion (real network, public registries)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.network
@@ -51,11 +49,11 @@ def test_fetch_npm_known_package():
 @pytest.mark.network
 def test_fetch_nonexistent_package_raises():
     with pytest.raises(FetchError):
-        fetch_package("pypi", "ce-paquet-nexiste-vraiment-pas-xyz123", None)
+        fetch_package("pypi", "this-package-really-does-not-exist-xyz123", None)
 
 
 # ---------------------------------------------------------------------------
-# SBOM (dépend de l'ingestion réseau, mais teste la logique de génération)
+# SBOM (needs network ingestion, but tests the generation logic)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.network
@@ -71,7 +69,7 @@ def test_sbom_captures_declared_dependencies():
 
 
 # ---------------------------------------------------------------------------
-# Agrégation de verdict — testée avec des doublures (pas de réseau nécessaire)
+# Verdict aggregation, tested with test doubles (no network needed)
 # ---------------------------------------------------------------------------
 
 class _FakeTrivyResult:
@@ -149,8 +147,8 @@ def test_aggregate_quarantine_on_low_scorecard_low_usage():
 
 
 def test_aggregate_does_not_quarantine_low_scorecard_if_widely_used():
-    # un score bas sur un paquet massivement dépendu est un signal différent :
-    # on ne bloque pas aveuglément (cf. commentaire dans Policy)
+    # a low score on a widely used package is a different signal:
+    # do not block it blindly (see the comment in Policy)
     verdict = aggregate(
         package_name="widely-used-pkg", version="1.0.0", ecosystem="npm",
         trivy_result=_FakeTrivyResult([]),
@@ -163,26 +161,26 @@ def test_aggregate_does_not_quarantine_low_scorecard_if_widely_used():
 def test_aggregate_marks_unavailable_stage_distinctly():
     verdict = aggregate(
         package_name="pkg", version="1.0.0", ecosystem="pypi",
-        trivy_result=_FakeTrivyResult([], scan_failed=True, error_message="DB indisponible"),
+        trivy_result=_FakeTrivyResult([], scan_failed=True, error_message="DB unavailable"),
         guarddog_result=_FakeGuardDogResult([], issue_count=0),
         depsdev_result=None,
     )
     stage_by_name = {s.name: s for s in verdict.stages}
     assert stage_by_name["trivy"].status == StageStatus.UNAVAILABLE
     assert stage_by_name["deps.dev"].status == StageStatus.UNAVAILABLE
-    # un signal indisponible ne doit jamais, à lui seul, déclencher un blocage
+    # an unavailable signal must never trigger a block on its own
     assert verdict.verdict == Verdict.ALLOW
 
 
 def test_verdict_never_downgrades():
-    """Le verdict ne peut qu'empirer au fil des étages, jamais s'améliorer."""
+    """The verdict can only get worse across stages, never better."""
     threat = type("F", (), {"rule_name": "threat-x"})()
     cve = _FakeFinding("CVE-1", "dep", "CRITICAL")
     verdict = aggregate(
         package_name="pkg", version="1.0.0", ecosystem="npm",
         trivy_result=_FakeTrivyResult([cve]),          # -> QUARANTINE
-        guarddog_result=_FakeGuardDogResult([threat]),  # -> BLOCK (doit l'emporter)
-        depsdev_result=_FakeDepsDevResult(scorecard_score=9.0, dependent_count=1000),  # -> ALLOW, ne doit rien changer
+        guarddog_result=_FakeGuardDogResult([threat]),  # -> BLOCK (must win)
+        depsdev_result=_FakeDepsDevResult(scorecard_score=9.0, dependent_count=1000),  # -> ALLOW, must change nothing
     )
     assert verdict.verdict == Verdict.BLOCK
 
@@ -194,4 +192,4 @@ def test_policy_thresholds_are_configurable():
         depsdev_result=_FakeDepsDevResult(scorecard_score=8.5, dependent_count=100),
         policy=strict_policy,
     )
-    assert verdict.verdict == Verdict.QUARANTINE  # 8.5 < 9.0 sous la policy stricte
+    assert verdict.verdict == Verdict.QUARANTINE  # 8.5 < 9.0 under the strict policy

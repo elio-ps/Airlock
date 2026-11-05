@@ -2,22 +2,21 @@
 airlock.analysis.guarddog_scan
 ================================
 
-Exécute GuardDog (https://github.com/DataDog/guarddog) sur un paquet npm
-ou PyPI. GuardDog combine deux familles de règles :
+Runs GuardDog (https://github.com/DataDog/guarddog) on an npm or PyPI package.
+GuardDog combines two rule families:
 
-  - règles "metadata"   : typosquatting, auteur suspect, incohérence
-                           dépôt/paquet, etc. (nécessitent un accès réseau
-                           au registre et parfois à des services tiers)
-  - règles "sourcecode" : détection de patterns (Semgrep + heuristiques)
-                           dans le code du paquet — capacités
-                           (`capability-*`, ex. accès réseau, écriture
-                           fichier) et signatures de comportements
-                           malveillants connus (`threat-*`, ex. reverse
-                           shell, exfiltration, obfuscation).
+  - "metadata" rules:   typosquatting, suspicious author, repository/package
+                        mismatch, etc. (need network access to the registry
+                        and sometimes to third-party services)
+  - "sourcecode" rules: pattern detection (Semgrep + heuristics) in the
+                        package code: capabilities (`capability-*`, e.g.
+                        network access, file write) and signatures of known
+                        malicious behaviour (`threat-*`, e.g. reverse shell,
+                        exfiltration, obfuscation).
 
-On utilise l'API Python de GuardDog plutôt que de wrapper son CLI en
-sous-processus : plus robuste (pas de parsing de texte), et ça permet de
-distinguer proprement les règles déclenchées des règles non applicables.
+The GuardDog Python API is used rather than wrapping its CLI in a subprocess:
+it avoids text parsing and cleanly separates triggered rules from rules that
+do not apply.
 """
 
 from __future__ import annotations
@@ -29,22 +28,22 @@ from typing import Literal
 
 Ecosystem = Literal["npm", "pypi"]
 
-# Règles dont le déclenchement est un signal fort de comportement malveillant
-# (par opposition aux règles "capability-*", qui décrivent une capacité du
-# code — souvent légitime — plutôt qu'un comportement suspect en soi).
+# Rules whose trigger is a strong signal of malicious behaviour, as opposed to
+# "capability-*" rules, which describe what the code can do (often legitimate)
+# rather than suspicious behaviour in itself.
 THREAT_PREFIX = "threat-"
 CAPABILITY_PREFIX = "capability-"
 
 
 class GuardDogError(Exception):
-    """Erreur lors de l'exécution de GuardDog."""
+    """Error while running GuardDog."""
 
 
 @dataclass
 class GuardDogFinding:
     rule_name: str
     category: str  # "threat" | "capability" | "metadata"
-    matches: list | dict  # contenu brut retourné par la règle (variable selon le type de règle)
+    matches: list | dict  # raw content returned by the rule (depends on the rule type)
 
     def to_dict(self) -> dict:
         return {"rule_name": self.rule_name, "category": self.category, "matches": self.matches}
@@ -57,7 +56,7 @@ class GuardDogResult:
     ecosystem: Ecosystem
     issue_count: int
     findings: list[GuardDogFinding]
-    rule_errors: dict[str, str]  # règles n'ayant pas pu s'exécuter (souvent : accès réseau tiers indisponible)
+    rule_errors: dict[str, str]  # rules that could not run (often: third-party network access unavailable)
     scan_failed: bool = False
     error_message: str | None = None
 
@@ -90,10 +89,9 @@ def _categorize(rule_name: str) -> str:
 
 def _rule_triggered(value) -> bool:
     """
-    GuardDog encode 'règle non déclenchée' de façons différentes selon le type
-    de règle : `None` pour les règles metadata, `{}` ou `[]` vide pour les
-    règles sourcecode qui n'ont trouvé aucune occurrence. Tout le reste
-    (liste non vide, dict non vide) signifie que la règle a matché.
+    GuardDog encodes 'rule not triggered' differently depending on the rule
+    type: `None` for metadata rules, empty `{}` or `[]` for sourcecode rules
+    with no occurrence. Anything else (non-empty list or dict) is a match.
     """
     if value is None:
         return False
@@ -109,17 +107,17 @@ def _get_scanner(ecosystem: Ecosystem):
     if ecosystem == "npm":
         from guarddog.scanners.npm_package_scanner import NPMPackageScanner
         return NPMPackageScanner()
-    raise ValueError(f"Écosystème non supporté par GuardDog : {ecosystem}")
+    raise ValueError(f"Ecosystem not supported by GuardDog: {ecosystem}")
 
 
 def scan_package(ecosystem: Ecosystem, name: str, version: str | None = None) -> GuardDogResult:
     """
-    Lance GuardDog sur un paquet distant (téléchargement géré en interne par
-    GuardDog, dans un répertoire temporaire qu'il nettoie lui-même).
+    Run GuardDog on a remote package (GuardDog downloads it itself into a
+    temporary directory that it cleans up).
     """
     try:
         raw = _get_scanner(ecosystem).scan_remote(name, version=version)
-    except Exception as e:  # GuardDog peut lever des exceptions variées (réseau, parsing...)
+    except Exception as e:  # GuardDog can raise many exception types (network, parsing...)
         return GuardDogResult(
             package_name=name, version=version, ecosystem=ecosystem,
             issue_count=0, findings=[], rule_errors={},
@@ -131,11 +129,10 @@ def scan_package(ecosystem: Ecosystem, name: str, version: str | None = None) ->
 def scan_local(ecosystem: Ecosystem, path: Path, name: str | None = None,
                 version: str | None = None) -> GuardDogResult:
     """
-    Lance GuardDog sur un répertoire DÉJÀ extrait (aucun téléchargement).
+    Run GuardDog on an ALREADY extracted directory (no download).
 
-    Seules les règles "sourcecode" s'appliquent : les règles "metadata"
-    (typosquatting, auteur suspect...) ont besoin des métadonnées du
-    registre et ne tournent donc pas en mode local.
+    Only "sourcecode" rules apply: "metadata" rules (typosquatting, suspicious
+    author...) need registry metadata and do not run in local mode.
     """
     label = name or Path(path).name
     try:
@@ -170,7 +167,7 @@ def _build_result(raw: dict, ecosystem: Ecosystem, name: str, version: str | Non
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Scan GuardDog d'un paquet npm/PyPI")
+    parser = argparse.ArgumentParser(description="GuardDog scan of an npm/PyPI package")
     parser.add_argument("ecosystem", choices=["npm", "pypi"])
     parser.add_argument("name")
     parser.add_argument("--version", default=None)

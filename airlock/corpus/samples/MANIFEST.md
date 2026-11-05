@@ -1,62 +1,57 @@
-# Corpus de référence — provenance
+# Reference corpus: provenance
 
-Ce corpus (10 échantillons malveillants + 10 échantillons sains) n'a pas été
-écrit pour ce projet : il est repris tel quel des **fixtures de tests
-unitaires officielles de GuardDog** (DataDog), publiées et maintenues sur
-https://github.com/DataDog/guarddog sous licence **Apache 2.0**
-(voir `THIRD_PARTY_LICENSE_guarddog_Apache2.0.txt`).
+This corpus (10 malicious + 10 benign samples) was not written for this project:
+it is taken unchanged from the **official GuardDog unit test fixtures**
+(DataDog), published at https://github.com/DataDog/guarddog under the
+**Apache 2.0** license (see `THIRD_PARTY_LICENSE_guarddog_Apache2.0.txt`).
 
-## Pourquoi ce choix plutôt qu'écrire nos propres échantillons ?
+## Why this choice rather than writing our own samples?
 
-1. **Provenance vérifiable et documentée** — chaque échantillon correspond à
-   un cas réel observé par des chercheurs en sécurité (exfiltration réseau,
-   obfuscation base64, hijacking DLL, exécution silencieuse de process...),
-   pas à une supposition d'étudiant sur "à quoi ressemble un malware".
-2. **Corpus adversarial, pas juste "malveillant vs. propre"** — le dossier
-   `benign/` de GuardDog contient volontairement des snippets qui
-   *ressemblent* aux malveillants (mêmes patterns lexicaux : IP en dur,
-   appels réseau, lecture de process) mais sont sémantiquement sûrs
-   (ex. adresses loopback/privées plutôt que serveur d'exfiltration). C'est
-   un bien meilleur test de discrimination qu'un corpus où le sain est
-   trivialement différent du malveillant.
-3. **Reproductibilité** — n'importe qui peut retélécharger exactement les
-   mêmes fichiers depuis le dépôt officiel et vérifier nos résultats.
+1. **Verifiable, documented provenance**: each sample matches a real case seen
+   by security researchers (network exfiltration, base64 obfuscation, DLL
+   hijacking, silent process execution...), not a student's guess at what
+   malware looks like.
+2. **An adversarial corpus**: GuardDog's `benign/` directory deliberately holds
+   snippets that *look like* the malicious ones (same lexical patterns: hardcoded
+   IP, network calls, process reads) but are semantically safe (e.g. loopback or
+   private addresses rather than an exfiltration server).
+3. **Reproducibility**: anyone can download the same files from the official
+   repository and check our results.
 
 ## Composition
 
-### `malicious/` (10 fichiers, doivent déclencher ≥1 règle GuardDog `threat-*`)
+### `malicious/` (10 files, must trigger at least one GuardDog `threat-*` rule)
 
-| # | Fichier | Comportement attendu |
-|---|---------|----------------------|
-| 01 | threat-network-exfiltration.py | Envoi de données vers une IP publique en dur |
-| 02 | exec-base64.py | Exécution de code décodé depuis du base64 |
-| 03 | threat-process-download-exec.py | Téléchargement puis exécution d'un binaire |
-| 04 | threat-runtime-obfuscation-base64exec.py | Obfuscation d'exécution via base64 |
-| 05 | exfiltrate-sensitive-data.py | Exfiltration de données sensibles (env, credentials) |
-| 06 | dll-hijacking.py | Détournement de chargement de DLL |
-| 07 | code-execution.py | Exécution de code arbitraire |
-| 08 | threat-filesystem-autostart.py | Persistance via démarrage automatique |
-| 09 | silent-process-execution.py | Lancement de process sans fenêtre/silencieux |
-| 10 | npm-exfiltrate-sensitive-data.js | Exfiltration de données sensibles (équivalent npm) |
+| # | File | Expected behaviour |
+|---|------|--------------------|
+| 01 | threat-network-exfiltration.py | Sends data to a hardcoded public IP |
+| 02 | exec-base64.py | Runs code decoded from base64 |
+| 03 | threat-process-download-exec.py | Downloads then runs a binary |
+| 04 | threat-runtime-obfuscation-base64exec.py | Execution obfuscated with base64 |
+| 05 | exfiltrate-sensitive-data.py | Exfiltrates sensitive data (env, credentials) |
+| 06 | dll-hijacking.py | Hijacks DLL loading |
+| 07 | code-execution.py | Arbitrary code execution |
+| 08 | threat-filesystem-autostart.py | Persistence through autostart |
+| 09 | silent-process-execution.py | Launches a silent, windowless process |
+| 10 | npm-exfiltrate-sensitive-data.js | Exfiltrates sensitive data (npm equivalent) |
 
-### `benign/` (10 fichiers, ne doivent déclencher AUCUNE règle `threat-*` — tests de non-régression / faux positifs de GuardDog lui-même)
+### `benign/` (10 files, must trigger NO `threat-*` rule)
 
-| # | Fichier | Pourquoi c'est sûr malgré l'apparence |
-|---|---------|----------------------------------------|
-| 01 | threat-network-exfiltration.py | Cibles réseau en loopback/privées (RFC1918), pas d'exfiltration réelle |
-| 02 | threat-process-download-exec.js | Téléchargement sans exécution, ou contexte sûr |
-| 03 | threat-runtime-obfuscation-base64exec.py | Usage légitime de base64 (pas d'`exec` sur le résultat) |
-| 04 | threat-filesystem-autostart.py | Manipulation de fichiers de config hors des chemins de persistance |
-| 05 | threat-process-sysinfo.py | Lecture d'infos système à des fins de diagnostic classique |
-| 06 | capability-network-lolbas.py | Usage d'un binaire système sans intention d'évasion |
-| 07 | capability-filesystem-browser.py | Navigation fichiers sans lecture sensible |
-| 08 | threat-process-cryptomining.py | Pattern de calcul intensif non lié au minage |
-| 09 | threat-runtime-keylogging.py | Capture clavier dans un contexte applicatif légitime (ex. accessibilité) |
-| 10 | threat-runtime-dynamic-loader.py | Chargement dynamique de module standard, pas de charge cachée |
+| # | File | Why it is safe despite appearances |
+|---|------|------------------------------------|
+| 01 | threat-network-exfiltration.py | Loopback/private (RFC 1918) targets, no real exfiltration |
+| 02 | threat-process-download-exec.js | Download without execution, or a safe context |
+| 03 | threat-runtime-obfuscation-base64exec.py | Legitimate base64 use (no `exec` on the result) |
+| 04 | threat-filesystem-autostart.py | Config files outside persistence paths |
+| 05 | threat-process-sysinfo.py | Reads system information for plain diagnostics |
+| 06 | capability-network-lolbas.py | Uses a system binary with no evasion intent |
+| 07 | capability-filesystem-browser.py | File browsing without sensitive reads |
+| 08 | threat-process-cryptomining.py | Heavy computation unrelated to mining |
+| 09 | threat-runtime-keylogging.py | Keyboard capture in a legitimate context (e.g. accessibility) |
+| 10 | threat-runtime-dynamic-loader.py | Dynamic loading of a standard module, no hidden payload |
 
-## Limite assumée
+## Accepted limit
 
-Ce corpus teste la **détection statique de patterns** (GuardDog sourcecode
-analyzer). Il ne remplace pas le corpus de détonation dynamique (Falco en
-sandbox), qui est un livrable distinct du projet portant spécifiquement sur
-le comportement à l'exécution plutôt que sur le code source.
+This corpus tests **static pattern detection** (GuardDog source code analyzer).
+It does not replace the dynamic detonation corpus, a separate deliverable
+focused on runtime behaviour rather than source code.

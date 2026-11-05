@@ -1,15 +1,15 @@
-# Décisions d'architecture (ADR)
+# Architecture Decision Records (ADR)
 
-Une fiche par décision : contexte, options, décision, conséquences.
-Format : numéro croissant, statut `proposé` / `accepté` / `remplacé`.
-Les ADR 0001 à 0005 ont été rédigés a posteriori (5 novembre 2026) pour des
-décisions déjà prises dans le code.
+One record per decision: context, options, decision, consequences.
+Format: increasing number, status `proposed` / `accepted` / `superseded`.
+ADRs 0001 to 0005 were written after the fact (5 November 2026) for decisions
+already made in the code.
 
-| N° | Décision | Statut |
+| No. | Decision | Status |
 |---|---|---|
-| [0001](0001-python-plutot-que-go.md) | Python plutôt que Go pour le pipeline | accepté |
-| [0002](0002-guarddog-en-bibliotheque.md) | GuardDog utilisé comme bibliothèque Python | accepté |
-| [0003](0003-threat-bloquant-capability-ignore.md) | Règles `threat-*` bloquantes, `capability-*` ignorées | accepté (à revoir) |
-| [0004](0004-verdict-lisible-et-monotone.md) | Verdict lisible, qui ne peut qu'empirer | accepté |
-| [0005](0005-etage-indisponible-fail-open-ou-closed.md) | Comportement quand un étage est indisponible | proposé |
-| [0006](0006-installation-trivy-verifiee.md) | Installation de Trivy en version fixe et vérifiée | accepté |
+| [0001](0001-python-over-go.md) | Python rather than Go for the pipeline | accepted |
+| [0002](0002-guarddog-as-library.md) | GuardDog used as a Python library | accepted |
+| [0003](0003-threat-blocks-capability-ignored.md) | `threat-*` rules block, `capability-*` rules are ignored | accepted (to review) |
+| [0004](0004-readable-monotonic-verdict.md) | Readable verdict that can only get worse | accepted |
+| [0005](0005-unavailable-stage-fail-open-or-closed.md) | Behaviour when a stage is unavailable | proposed |
+| [0006](0006-verified-trivy-installation.md) | Trivy installed at a fixed, verified version | accepted |

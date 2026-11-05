@@ -2,26 +2,21 @@
 airlock.verdict.aggregate
 ============================
 
-Combine les signaux des différents étages (SBOM, Trivy, GuardDog, deps.dev)
-en un verdict unique, structuré et JUSTIFIÉ : chaque décision doit pouvoir
-être expliquée à un humain (c'est le livrable "méthodo de jugement" du
-projet), pas juste un score opaque.
+Combines the signals of the stages (SBOM, Trivy, GuardDog, deps.dev) into a
+single, structured and JUSTIFIED verdict: each decision can be explained to a
+human, it is not an opaque score.
 
-Principe de conception : un signal INDISPONIBLE (ex. Trivy sans accès à sa
-DB) ne doit jamais être confondu avec un signal "RAS". On distingue
-explicitement trois états par étage : OK / SUSPECT / INDISPONIBLE.
+Design principle: an UNAVAILABLE signal (e.g. Trivy without its DB) must never
+be mistaken for a clean signal. Each stage has three explicit states:
+OK / SUSPECT / UNAVAILABLE.
 
-Le verdict final suit une logique simple et volontairement lisible plutôt
-qu'un score pondéré opaque :
-  - un seul "threat-*" GuardDog déclenché => BLOCK (signal comportemental
-    fort, peu de faux positifs sur ces règles)
-  - une CVE CRITICAL/HIGH avec correctif disponible => QUARANTINE
-  - un score OpenSSF Scorecard très bas (< 3/10) sur un paquet peu
-    dépendu => QUARANTINE (hygiène du projet insuffisante)
-  - sinon => ALLOW
-Ces seuils sont des points de départ pédagogiques : le brief demande des
-"policies configurables selon la politique d'entreprise", donc ils sont
-isolés dans `Policy` pour être ajustés sans toucher à la logique.
+The final verdict follows simple, deliberately readable logic:
+  - one GuardDog "threat-*" rule => BLOCK (strong behavioural signal)
+  - a CRITICAL/HIGH CVE => QUARANTINE
+  - a very low OpenSSF Scorecard (< 3/10) on a little-used package =>
+    QUARANTINE (weak project hygiene)
+  - otherwise => ALLOW
+Thresholds live in `Policy` so they can be tuned without touching the logic.
 """
 
 from __future__ import annotations
@@ -34,26 +29,26 @@ from pathlib import Path
 
 
 class StageStatus(str, Enum):
-    OK = "ok"                    # étage exécuté, aucun signal suspect
-    SUSPECT = "suspect"          # étage exécuté, signal(aux) suspect(s) trouvé(s)
-    UNAVAILABLE = "unavailable"  # étage n'a pas pu s'exécuter (réseau, timeout, etc.)
+    OK = "ok"                    # stage ran, no suspicious signal
+    SUSPECT = "suspect"          # stage ran, suspicious signal(s) found
+    UNAVAILABLE = "unavailable"  # stage could not run (network, timeout, etc.)
 
 
 class Verdict(str, Enum):
     ALLOW = "allow"
-    QUARANTINE = "quarantine"     # nécessite revue humaine avant usage
+    QUARANTINE = "quarantine"     # needs human review before use
     BLOCK = "block"
 
 
 @dataclass
 class Policy:
-    """Seuils de décision, pensés pour être surchargés par une config d'entreprise (YAML/JSON)."""
+    """Decision thresholds, meant to be overridden by a company configuration."""
     block_on_any_threat_rule: bool = True
     quarantine_on_cve_severity: tuple[str, ...] = ("HIGH", "CRITICAL")
     quarantine_on_scorecard_below: float = 3.0
-    quarantine_on_scorecard_below_dependents: int = 50  # le seuil scorecard ne s'applique
-    # qu'aux paquets peu utilisés : un paquet massivement dépendu avec un score bas
-    # est un signal différent (à documenter côté rapport, pas à bloquer aveuglément)
+    quarantine_on_scorecard_below_dependents: int = 50  # the scorecard threshold only
+    # applies to little-used packages: a widely used package with a low score is a
+    # different signal (to report, not to block blindly)
 
     @classmethod
     def from_file(cls, path: Path) -> "Policy":
@@ -66,7 +61,7 @@ class StageSummary:
     name: str
     status: StageStatus
     detail: str
-    raw_ref: str = ""  # pointeur vers le rapport détaillé de l'étage (fichier, id...)
+    raw_ref: str = ""  # pointer to the stage's detailed report (file, id...)
 
     def to_dict(self) -> dict:
         return {"name": self.name, "status": self.status.value, "detail": self.detail, "raw_ref": self.raw_ref}
@@ -112,47 +107,47 @@ def aggregate(
     reasons: list[str] = []
     verdict = Verdict.ALLOW
 
-    # --- Étage SBOM (toujours "ok" s'il a produit un fichier : c'est un inventaire, pas un scanner) ---
+    # --- SBOM stage (always "ok" when it produced a file: an inventory, not a scanner) ---
     if sbom_path is not None:
         stages.append(StageSummary(
             name="sbom", status=StageStatus.OK,
-            detail="SBOM CycloneDX généré", raw_ref=str(sbom_path),
+            detail="CycloneDX SBOM generated", raw_ref=str(sbom_path),
         ))
 
-    # --- Étage Trivy (CVE) ---
+    # --- Trivy stage (CVEs) ---
     if trivy_result is None:
-        stages.append(StageSummary(name="trivy", status=StageStatus.UNAVAILABLE, detail="non exécuté"))
+        stages.append(StageSummary(name="trivy", status=StageStatus.UNAVAILABLE, detail="not run"))
     elif trivy_result.scan_failed:
         stages.append(StageSummary(
             name="trivy", status=StageStatus.UNAVAILABLE,
-            detail=f"échec d'exécution : {trivy_result.error_message}",
+            detail=f"execution failed: {trivy_result.error_message}",
         ))
     else:
         severe = [f for f in trivy_result.findings if f.severity in policy.quarantine_on_cve_severity]
         if severe:
             stages.append(StageSummary(
                 name="trivy", status=StageStatus.SUSPECT,
-                detail=f"{len(severe)} CVE {'/'.join(policy.quarantine_on_cve_severity)} sur "
-                       f"{len(trivy_result.findings)} au total",
+                detail=f"{len(severe)} {'/'.join(policy.quarantine_on_cve_severity)} CVE(s) out of "
+                       f"{len(trivy_result.findings)} in total",
             ))
             reasons.append(
-                f"Trivy : {len(severe)} vulnérabilité(s) sévère(s) détectée(s) "
-                f"(ex. {severe[0].vuln_id} sur {severe[0].pkg_name})"
+                f"Trivy: {len(severe)} severe vulnerabilit(y/ies) detected "
+                f"(e.g. {severe[0].vuln_id} in {severe[0].pkg_name})"
             )
             verdict = _escalate(verdict, Verdict.QUARANTINE)
         else:
             stages.append(StageSummary(
                 name="trivy", status=StageStatus.OK,
-                detail=f"{len(trivy_result.findings)} CVE trouvée(s), aucune sévère",
+                detail=f"{len(trivy_result.findings)} CVE(s) found, none severe",
             ))
 
-    # --- Étage GuardDog (comportement) ---
+    # --- GuardDog stage (behaviour) ---
     if guarddog_result is None:
-        stages.append(StageSummary(name="guarddog", status=StageStatus.UNAVAILABLE, detail="non exécuté"))
+        stages.append(StageSummary(name="guarddog", status=StageStatus.UNAVAILABLE, detail="not run"))
     elif guarddog_result.scan_failed:
         stages.append(StageSummary(
             name="guarddog", status=StageStatus.UNAVAILABLE,
-            detail=f"échec d'exécution : {guarddog_result.error_message}",
+            detail=f"execution failed: {guarddog_result.error_message}",
         ))
     else:
         threats = guarddog_result.threat_findings
@@ -160,24 +155,24 @@ def aggregate(
             rule_list = ", ".join(f.rule_name for f in threats)
             stages.append(StageSummary(
                 name="guarddog", status=StageStatus.SUSPECT,
-                detail=f"{len(threats)} règle(s) 'threat-*' déclenchée(s) : {rule_list}",
+                detail=f"{len(threats)} 'threat-*' rule(s) triggered: {rule_list}",
             ))
-            reasons.append(f"GuardDog : comportement(s) suspect(s) détecté(s) dans le code ({rule_list})")
+            reasons.append(f"GuardDog: suspicious behaviour detected in the code ({rule_list})")
             if policy.block_on_any_threat_rule:
                 verdict = _escalate(verdict, Verdict.BLOCK)
         else:
             stages.append(StageSummary(
                 name="guarddog", status=StageStatus.OK,
-                detail=f"{guarddog_result.issue_count} signal(aux) capability, 0 threat",
+                detail=f"{guarddog_result.issue_count} capability signal(s), 0 threat",
             ))
 
-    # --- Étage deps.dev (réputation/hygiène) ---
+    # --- deps.dev stage (reputation/hygiene) ---
     if depsdev_result is None:
-        stages.append(StageSummary(name="deps.dev", status=StageStatus.UNAVAILABLE, detail="non exécuté"))
+        stages.append(StageSummary(name="deps.dev", status=StageStatus.UNAVAILABLE, detail="not run"))
     elif depsdev_result.scan_failed:
         stages.append(StageSummary(
             name="deps.dev", status=StageStatus.UNAVAILABLE,
-            detail=f"échec d'exécution : {depsdev_result.error_message}",
+            detail=f"execution failed: {depsdev_result.error_message}",
         ))
     else:
         score = depsdev_result.scorecard_score
@@ -189,19 +184,19 @@ def aggregate(
         ):
             stages.append(StageSummary(
                 name="deps.dev", status=StageStatus.SUSPECT,
-                detail=f"score OpenSSF Scorecard bas ({score}/10) pour un paquet peu dépendu "
-                       f"({dependents} dépendants directs)",
+                detail=f"low OpenSSF Scorecard score ({score}/10) for a little-used package "
+                       f"({dependents} direct dependents)",
             ))
             reasons.append(
-                f"deps.dev : hygiène du projet faible (Scorecard {score}/10, {dependents} dépendants)"
+                f"deps.dev: weak project hygiene (Scorecard {score}/10, {dependents} dependents)"
             )
             verdict = _escalate(verdict, Verdict.QUARANTINE)
         else:
-            detail = f"score OpenSSF Scorecard {score}/10" if score is not None else "score non disponible"
+            detail = f"OpenSSF Scorecard score {score}/10" if score is not None else "score not available"
             stages.append(StageSummary(name="deps.dev", status=StageStatus.OK, detail=detail))
 
     if not reasons:
-        reasons.append("Aucun signal suspect sur les étages exécutés.")
+        reasons.append("No suspicious signal on the stages that ran.")
 
     return PackageVerdict(
         package_name=package_name, version=version, ecosystem=ecosystem,
@@ -213,5 +208,5 @@ _VERDICT_ORDER = [Verdict.ALLOW, Verdict.QUARANTINE, Verdict.BLOCK]
 
 
 def _escalate(current: Verdict, candidate: Verdict) -> Verdict:
-    """Un verdict ne peut être qu'aggravé, jamais adouci, au fil des étages."""
+    """A verdict can only get worse across stages, never better."""
     return candidate if _VERDICT_ORDER.index(candidate) > _VERDICT_ORDER.index(current) else current

@@ -2,20 +2,17 @@
 airlock.corpus.run_eval
 =========================
 
-Fait tourner l'analyseur de code source de GuardDog sur chaque échantillon
-du corpus de référence (airlock/corpus/samples/{malicious,benign}/) et
-compare le verdict obtenu au label attendu (déduit du dossier parent).
+Runs the GuardDog source code analyzer on each sample of the reference corpus
+(airlock/corpus/samples/{malicious,benign}/) and compares the result with the
+expected label (taken from the parent directory).
 
-Critère de décision retenu (cohérent avec airlock.verdict.aggregate) :
-un échantillon est jugé "suspect" si au moins une règle `threat-*` se
-déclenche. Les règles `capability-*` (accès fichier, réseau, process...)
-sont ignorées pour ce jugement : elles décrivent une capacité du code,
-pas un comportement malveillant en soi, et la quasi-totalité du code
-légitime en a.
+Decision criterion (consistent with airlock.verdict.aggregate): a sample is
+"suspicious" when at least one `threat-*` rule triggers. `capability-*` rules
+(file, network, process access...) are ignored here: they describe what code
+can do, not malicious behaviour, and almost all legitimate code has them.
 
-Sortie : un rapport JSON avec matrice de confusion (VP/VN/FP/FN) et détail
-par échantillon, qui sert de preuve pour le livrable "méthodo de jugement
-+ corpus de référence, verdict documenté".
+Output: a JSON report with a confusion matrix (TP/TN/FP/FN) and per-sample
+details.
 """
 
 from __future__ import annotations
@@ -59,9 +56,9 @@ class SampleVerdict:
 
 def analyze_sample(file_path: Path, analyzer: Analyzer) -> list[str]:
     """
-    GuardDog analyse un RÉPERTOIRE (pas un fichier isolé) : on copie
-    l'échantillon dans un dossier temporaire à lui seul pour éviter toute
-    contamination entre échantillons.
+    GuardDog analyses a DIRECTORY, not a single file: each sample is copied
+    alone into a temporary directory so that samples cannot contaminate each
+    other.
     """
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp) / file_path.name
@@ -125,9 +122,9 @@ if __name__ == "__main__":
     cm = report["confusion_matrix"]
     m = report["metrics"]
     print(
-        f"\n--- Résumé ---\n"
-        f"VP={cm['true_positives']} FN={cm['false_negatives']} "
-        f"VN={cm['true_negatives']} FP={cm['false_positives']}\n"
+        f"\n--- Summary ---\n"
+        f"TP={cm['true_positives']} FN={cm['false_negatives']} "
+        f"TN={cm['true_negatives']} FP={cm['false_positives']}\n"
         f"Accuracy={m['accuracy']:.2f} Precision={m['precision']} Recall={m['recall']}\n"
-        f"Rapport complet : {out_path}"
+        f"Full report: {out_path}"
     )

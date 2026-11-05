@@ -2,15 +2,14 @@
 airlock.sbom.generate
 ======================
 
-Construit un SBOM CycloneDX (format JSON, spec 1.5) pour un paquet ingéré
-par airlock.ingest.fetch. Le composant racine correspond au paquet lui-même ;
-ses dépendances déclarées (package.json pour npm, PKG-INFO/METADATA pour
-PyPI) sont ajoutées comme composants enfants.
+Builds a CycloneDX SBOM (JSON, spec 1.5) for a package ingested by
+airlock.ingest.fetch. The root component is the package itself; its declared
+dependencies (package.json for npm, PKG-INFO/METADATA for PyPI) are added as
+child components.
 
-On ne cherche pas ici l'exhaustivité d'un `npm ls` ou d'un `pip freeze`
-(qui nécessiteraient d'installer réellement le paquet, ce qu'on refuse de
-faire hors sandbox) : on se contente de ce qui est déclaré statiquement.
-C'est suffisant pour nourrir Trivy et documenter la chaîne de dépendances.
+This is not as exhaustive as `npm ls` or `pip freeze`, which would require
+installing the package, something refused outside the sandbox: only what is
+statically declared is used.
 """
 
 from __future__ import annotations
@@ -33,7 +32,7 @@ from airlock.ingest.fetch import FetchedPackage
 def _npm_dependencies(extract_path: Path) -> dict[str, str]:
     pkg_json = extract_path / "package" / "package.json"
     if not pkg_json.exists():
-        # certains tarballs npm n'ont pas de sous-dossier "package/"
+        # some npm tarballs have no "package/" subdirectory
         pkg_json = extract_path / "package.json"
     if not pkg_json.exists():
         return {}
@@ -45,7 +44,7 @@ def _npm_dependencies(extract_path: Path) -> dict[str, str]:
 
 
 _REQUIRES_DIST_LINE_RE = re.compile(r"^Requires-Dist:\s*(.+)$")
-# Ex. d'entrée à parser : "charset-normalizer (<4,>=2)" ou "PySocks (!=1.5.7) ; extra == 'socks'"
+# Example entries: "charset-normalizer (<4,>=2)" or "PySocks (!=1.5.7) ; extra == 'socks'"
 _REQUIRES_DIST_ENTRY_RE = re.compile(r"^([A-Za-z0-9_.\-]+)\s*(\(([^)]*)\))?\s*(;.*)?$")
 
 
@@ -63,18 +62,17 @@ def _parse_requires_dist_entries(entries: list[str]) -> dict[str, str]:
 
 def _pypi_dependencies(extract_path: Path, registry_metadata: dict) -> dict[str, str]:
     """
-    Résout les dépendances déclarées d'un paquet PyPI.
+    Resolve the declared dependencies of a PyPI package.
 
-    Source privilégiée : le champ `requires_dist` de l'API JSON PyPI, qui est
-    fiable même pour les anciens paquets dont le sdist ne contient pas cette
-    métadonnée statiquement (déclaration dynamique via setup.py). On retombe
-    sur un parsing de PKG-INFO/METADATA en secours si l'API ne fournit rien.
+    Preferred source: the `requires_dist` field of the PyPI JSON API, reliable
+    even for old packages whose sdist lacks this metadata (dynamic declaration
+    in setup.py). Falls back to parsing PKG-INFO/METADATA.
     """
     requires_dist = registry_metadata.get("requires_dist")
     if requires_dist:
         return _parse_requires_dist_entries(requires_dist)
 
-    # Fallback : parsing statique des fichiers de métadonnées extraits
+    # Fallback: static parsing of the extracted metadata files
     candidates = list(extract_path.rglob("PKG-INFO")) + list(extract_path.rglob("METADATA"))
     for candidate in candidates:
         try:
@@ -95,11 +93,11 @@ def _make_purl(ecosystem: str, name: str, version: str) -> PackageURL:
         return PackageURL(type="npm", name=name, version=version)
     elif ecosystem == "pypi":
         return PackageURL(type="pypi", name=name, version=version)
-    raise ValueError(f"Écosystème non supporté pour purl : {ecosystem}")
+    raise ValueError(f"Ecosystem not supported for purl: {ecosystem}")
 
 
 def build_sbom(pkg: FetchedPackage) -> Bom:
-    """Construit l'objet Bom CycloneDX pour le paquet ingéré."""
+    """Build the CycloneDX Bom object for the ingested package."""
     bom = Bom()
     bom.metadata.component = root = Component(
         name=pkg.name,
@@ -131,17 +129,17 @@ def build_sbom(pkg: FetchedPackage) -> Bom:
         try:
             root.licenses.add(LicenseExpression(license_expr))
         except ValueError:
-            pass  # expression non parsable (licence libre non SPDX) : on l'ignore proprement
+            pass  # unparsable expression (free-form, non-SPDX license): ignore it
 
-    # NB : le composant racine ne doit PAS être dupliqué dans bom.components
-    # (il vit uniquement dans bom.metadata.component selon la spec CycloneDX 1.5) ;
-    # l'ajouter en double provoquait une réécriture du bom-ref par le sérialiseur.
+    # The root component must NOT be duplicated in bom.components: per the
+    # CycloneDX 1.5 spec it only lives in bom.metadata.component, and adding it
+    # twice made the serializer rewrite its bom-ref.
 
     for dep_name, dep_range in deps.items():
         dep_ref = f"{pkg.ecosystem}:{dep_name}@{dep_range}"
         dep_component = Component(
             name=dep_name,
-            version=dep_range,  # on garde le range déclaré, pas de résolution ici
+            version=dep_range,  # keep the declared range, no resolution here
             type=ComponentType.LIBRARY,
             bom_ref=dep_ref,
         )
@@ -156,7 +154,7 @@ def sbom_to_json(bom: Bom) -> str:
 
 
 def generate_sbom_file(pkg: FetchedPackage, output_dir: Path) -> Path:
-    """Génère le SBOM et l'écrit sur disque, retourne le chemin du fichier."""
+    """Generate the SBOM, write it to disk and return the file path."""
     output_dir.mkdir(parents=True, exist_ok=True)
     bom = build_sbom(pkg)
     out_path = output_dir / f"{pkg.name.replace('/', '__')}-{pkg.version}.cdx.json"
@@ -170,7 +168,7 @@ if __name__ == "__main__":
 
     from airlock.ingest.fetch import fetch_package
 
-    parser = argparse.ArgumentParser(description="Génère un SBOM CycloneDX pour un paquet npm/PyPI")
+    parser = argparse.ArgumentParser(description="Generate a CycloneDX SBOM for an npm/PyPI package")
     parser.add_argument("ecosystem", choices=["npm", "pypi"])
     parser.add_argument("name")
     parser.add_argument("--version", default=None)
@@ -179,5 +177,5 @@ if __name__ == "__main__":
 
     pkg = fetch_package(args.ecosystem, args.name, args.version)
     out_path = generate_sbom_file(pkg, Path(args.out))
-    print(f"SBOM écrit : {out_path}", file=sys.stderr)
+    print(f"SBOM written: {out_path}", file=sys.stderr)
     print(out_path.read_text())
