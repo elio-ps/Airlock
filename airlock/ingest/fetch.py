@@ -125,6 +125,13 @@ def _sha256_of(path: Path) -> str:
     return h.hexdigest()
 
 
+def _get_registry_json(url: str, not_found_message: str) -> dict:
+    resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=DEFAULT_TIMEOUT)
+    if resp.status_code != 200:
+        raise FetchError(f"{not_found_message} ({resp.status_code})")
+    return resp.json()
+
+
 def _download(url: str, dest: Path) -> None:
     headers = {"User-Agent": USER_AGENT}
     with requests.get(url, headers=headers, stream=True, timeout=DEFAULT_TIMEOUT) as r:
@@ -183,10 +190,7 @@ def _check_archive_size(archive: Path, member_count: int, total_bytes: int) -> N
 def fetch_npm(name: str, version: str | None, workdir: Path) -> FetchedPackage:
     """Download an npm package (.tgz tarball) and extract it."""
     meta_url = f"{NPM_REGISTRY}/{quote(name, safe='@')}"  # scoped: @scope%2Fname
-    resp = requests.get(meta_url, headers={"User-Agent": USER_AGENT}, timeout=DEFAULT_TIMEOUT)
-    if resp.status_code != 200:
-        raise FetchError(f"npm package not found: {name} ({resp.status_code})")
-    meta = resp.json()
+    meta = _get_registry_json(meta_url, f"npm package not found: {name}")
 
     if version is None:
         version = meta.get("dist-tags", {}).get("latest")
@@ -197,27 +201,9 @@ def fetch_npm(name: str, version: str | None, workdir: Path) -> FetchedPackage:
     if version_meta is None:
         raise FetchError(f"Version {version} not found for npm package {name}")
 
-    tarball_url = version_meta["dist"]["tarball"]
-    expected_integrity = version_meta["dist"].get("integrity", "")
-    expected_shasum = version_meta["dist"].get("shasum")
-
     archive_path = workdir / f"{safe_slug(name)}-{safe_slug(version)}.tgz"
-    _download(tarball_url, archive_path)
-
-    # Integrity check against the registry (not a safety guarantee, only proof
-    # that the archive was not altered in transit).
-    if expected_integrity.startswith("sha512-"):
-        digest = base64.b64encode(hashlib.sha512(archive_path.read_bytes()).digest()).decode()
-        if digest != expected_integrity.removeprefix("sha512-"):
-            raise FetchError(
-                f"Integrity failure for {name}@{version}: sha512 does not match the registry"
-            )
-    elif expected_shasum:
-        sha1 = hashlib.sha1(archive_path.read_bytes()).hexdigest()  # noqa: S324 - format imposed by npm
-        if sha1 != expected_shasum:
-            raise FetchError(
-                f"Integrity failure for {name}@{version}: shasum does not match the registry"
-            )
+    _download(version_meta["dist"]["tarball"], archive_path)
+    _check_npm_integrity(archive_path, version_meta["dist"], f"{name}@{version}")
 
     extract_path = workdir / f"{safe_slug(name)}-{safe_slug(version)}"
     extract_path.mkdir(parents=True, exist_ok=True)
@@ -235,6 +221,25 @@ def fetch_npm(name: str, version: str | None, workdir: Path) -> FetchedPackage:
     )
 
 
+def _check_npm_integrity(archive_path: Path, dist: dict, label: str) -> None:
+    """
+    Compare the archive with the digest published by the registry. This is not
+    a safety guarantee, only proof that the archive was not altered in transit.
+    """
+    data = archive_path.read_bytes()
+    integrity = dist.get("integrity", "")
+    if integrity.startswith("sha512-"):
+        actual = base64.b64encode(hashlib.sha512(data).digest()).decode()
+        expected, algorithm = integrity.removeprefix("sha512-"), "sha512"
+    elif dist.get("shasum"):
+        actual = hashlib.sha1(data).hexdigest()  # noqa: S324 - old packages only have sha1
+        expected, algorithm = dist["shasum"], "shasum"
+    else:
+        return
+    if actual != expected:
+        raise FetchError(f"Integrity failure for {label}: {algorithm} does not match the registry")
+
+
 def fetch_pypi(name: str, version: str | None, workdir: Path) -> FetchedPackage:
     """Download a PyPI package (sdist when possible, else a wheel) and extract it."""
     quoted = quote(name, safe="")
@@ -242,10 +247,7 @@ def fetch_pypi(name: str, version: str | None, workdir: Path) -> FetchedPackage:
         f"{PYPI_REGISTRY}/{quoted}/json" if version is None
         else f"{PYPI_REGISTRY}/{quoted}/{quote(version, safe='')}/json"
     )
-    resp = requests.get(meta_url, headers={"User-Agent": USER_AGENT}, timeout=DEFAULT_TIMEOUT)
-    if resp.status_code != 200:
-        raise FetchError(f"PyPI package not found: {name}=={version} ({resp.status_code})")
-    meta = resp.json()
+    meta = _get_registry_json(meta_url, f"PyPI package not found: {name}=={version}")
 
     resolved_version = meta["info"]["version"]
     releases = meta.get("urls", [])
@@ -360,15 +362,3 @@ def fetch_package(ecosystem: Ecosystem, name: str, version: str | None = None,
         raise FetchError(f"Registry unreachable for {name}: {e}") from e
     raise ValueError(f"Unsupported ecosystem: {ecosystem}")
 
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Download and extract an npm/PyPI package")
-    parser.add_argument("ecosystem", choices=["npm", "pypi"])
-    parser.add_argument("name")
-    parser.add_argument("--version", default=None)
-    args = parser.parse_args()
-
-    pkg = fetch_package(args.ecosystem, args.name, args.version)
-    print(json.dumps(pkg.to_dict(), indent=2, ensure_ascii=False))

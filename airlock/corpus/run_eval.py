@@ -24,16 +24,9 @@ from pathlib import Path
 
 from guarddog.analyzer.analyzer import Analyzer
 
+from airlock.analysis.guarddog_scan import THREAT_PREFIX, rule_triggered
+
 CORPUS_DIR = Path(__file__).parent / "samples"
-THREAT_PREFIX = "threat-"
-
-
-def _rule_triggered(value) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, (list, dict)) and len(value) == 0:
-        return False
-    return True
 
 
 @dataclass
@@ -67,7 +60,7 @@ def analyze_sample(file_path: Path, analyzer: Analyzer) -> list[str]:
         results = raw.get("results", {})
         return [
             rule for rule, value in results.items()
-            if rule.startswith(THREAT_PREFIX) and _rule_triggered(value)
+            if rule.startswith(THREAT_PREFIX) and rule_triggered(value)
         ]
 
 

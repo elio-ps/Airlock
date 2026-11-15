@@ -8,8 +8,6 @@ Run: python3 -m pytest airlock/tests/ -v
 from __future__ import annotations
 
 import shutil
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -275,3 +273,24 @@ def test_policy_thresholds_are_configurable():
         policy=strict_policy,
     )
     assert verdict.verdict == Verdict.QUARANTINE  # 8.5 < 9.0 under the strict policy
+
+
+def test_policy_file_with_unknown_key_is_refused(tmp_path):
+    path = tmp_path / "policy.json"
+    path.write_text('{"fail_closd": true}')
+    with pytest.raises(ValueError, match="invalid policy file"):
+        Policy.from_file(path)
+
+
+def test_sbom_ignores_malformed_npm_dependencies(tmp_path):
+    from airlock.sbom.generate import _npm_dependencies
+    (tmp_path / "package.json").write_text('{"dependencies": "oops", "optionalDependencies": {"a": "1"}}')
+    assert _npm_dependencies(tmp_path) == {"a": "1"}
+
+
+def test_sbom_failure_is_reported_as_unavailable():
+    verdict = aggregate(package_name="p", version="1", ecosystem="npm",
+                        sbom_error="TypeError: boom", policy=Policy(fail_closed=True),
+                        skipped={"trivy", "guarddog", "depsdev", "detonation"})
+    assert {s.name: s.status for s in verdict.stages}["sbom"] == StageStatus.UNAVAILABLE
+    assert verdict.verdict == Verdict.QUARANTINE

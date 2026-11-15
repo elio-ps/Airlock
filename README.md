@@ -38,7 +38,8 @@ podman build -t localhost/airlock-sandbox:1 sandbox/   # for detonation
 python3 -m airlock.pipeline pypi requests --version 2.31.0
 ```
 
-Full install and usage: [`airlock/README.md`](airlock/README.md). Running the
+Full install and usage: [`airlock/README.md`](airlock/README.md), and a
+step-by-step guide in French: [`docs/guide-utilisation.md`](docs/guide-utilisation.md). Running the
 Falco sensor: [`sandbox/README.md`](sandbox/README.md).
 
 ## Milestone 1 (January) — status

@@ -2,10 +2,11 @@
 # Runs inside the disposable container. Receives the package archive on stdin:
 # no host path is ever shared with the code under analysis.
 #
-# Usage: detonate.sh <npm|pypi> <tar|zip>
+# Usage: detonate.sh <npm|pypi> <tar|zip|wheel> [wheel file name]
 set -u
 ECOSYSTEM=$1
 FORMAT=$2
+WHEEL=${3:-}
 PHASE_TIMEOUT=${AIRLOCK_PHASE_TIMEOUT:-40}
 
 # --- Decoys: what a developer's home holds, with a per-run canary token -------
@@ -31,13 +32,19 @@ export PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_CONFIG_FILE=/dev/null
 
 mkdir -p /work/pkg /work/site
 cd /work/pkg || exit 90
-cat > /work/archive
-if [ "$FORMAT" = zip ]; then
-    python3 -m zipfile -e /work/archive /work/pkg || exit 91
+if [ "$FORMAT" = wheel ]; then
+    # A wheel is installed as is: pip refuses an extracted wheel, and a file
+    # without its wheel name. The name was checked on the host.
+    cat > "/work/$WHEEL"
 else
-    tar -xzf /work/archive -C /work/pkg --no-same-owner || exit 91
+    cat > /work/archive
+    if [ "$FORMAT" = zip ]; then
+        python3 -m zipfile -e /work/archive /work/pkg || exit 91
+    else
+        tar -xzf /work/archive -C /work/pkg --no-same-owner || exit 91
+    fi
+    rm -f /work/archive
 fi
-rm -f /work/archive
 ROOT=/work/pkg
 [ -d package ] && ROOT=/work/pkg/package
 if [ "$ECOSYSTEM" = pypi ] && [ ! -f "$ROOT/setup.py" ] && [ ! -f "$ROOT/pyproject.toml" ]; then
@@ -64,8 +71,10 @@ if [ "$ECOSYSTEM" = npm ]; then
     echo "[airlock] phase require exit=$?"
 else
     echo "[airlock] phase: install"
+    TARGET=.
+    [ "$FORMAT" = wheel ] && TARGET="/work/$WHEEL"
     timeout -k 3 "$PHASE_TIMEOUT" python3 -m pip install --no-deps --no-index --no-build-isolation \
-        --break-system-packages --target /work/site .
+        --break-system-packages --target /work/site "$TARGET"
     echo "[airlock] phase install exit=$?"
     echo "[airlock] phase: import"
     timeout -k 3 "$PHASE_TIMEOUT" python3 -c '

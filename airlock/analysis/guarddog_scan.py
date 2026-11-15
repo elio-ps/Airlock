@@ -21,8 +21,7 @@ do not apply.
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -33,10 +32,6 @@ Ecosystem = Literal["npm", "pypi"]
 # rather than suspicious behaviour in itself.
 THREAT_PREFIX = "threat-"
 CAPABILITY_PREFIX = "capability-"
-
-
-class GuardDogError(Exception):
-    """Error while running GuardDog."""
 
 
 @dataclass
@@ -87,7 +82,7 @@ def _categorize(rule_name: str) -> str:
     return "metadata"
 
 
-def _rule_triggered(value) -> bool:
+def rule_triggered(value) -> bool:
     """
     GuardDog encodes 'rule not triggered' differently depending on the rule
     type: `None` for metadata rules, empty `{}` or `[]` for sourcecode rules
@@ -110,70 +105,33 @@ def _get_scanner(ecosystem: Ecosystem):
     raise ValueError(f"Ecosystem not supported by GuardDog: {ecosystem}")
 
 
-def scan_package(ecosystem: Ecosystem, name: str, version: str | None = None) -> GuardDogResult:
-    """
-    Run GuardDog on a remote package (GuardDog downloads it itself into a
-    temporary directory that it cleans up).
-    """
-    try:
-        raw = _get_scanner(ecosystem).scan_remote(name, version=version)
-    except Exception as e:  # GuardDog can raise many exception types (network, parsing...)
-        return GuardDogResult(
-            package_name=name, version=version, ecosystem=ecosystem,
-            issue_count=0, findings=[], rule_errors={},
-            scan_failed=True, error_message=str(e),
-        )
-    return _build_result(raw, ecosystem, name, version)
-
-
 def scan_local(ecosystem: Ecosystem, path: Path, name: str | None = None,
                 version: str | None = None, info: dict | None = None) -> GuardDogResult:
     """
-    Run GuardDog on an ALREADY extracted directory (no download).
+    Run GuardDog on an ALREADY extracted directory (no download), so that the
+    analysed bytes are exactly the ones that were ingested and integrity-checked.
 
-    This is what the pipeline uses, so that the analysed bytes are exactly the
-    ones that were ingested and integrity-checked. "metadata" rules
-    (typosquatting, suspicious author...) only run when `info`, the registry
-    document of the package, is given.
+    "metadata" rules (typosquatting, suspicious author...) only run when `info`,
+    the registry document of the package, is given. Never raises.
     """
     label = name or Path(path).name
     try:
         raw = _get_scanner(ecosystem).scan_local(str(path), info=info)
-    except Exception as e:
+    except Exception as e:  # GuardDog can raise many exception types (network, parsing...)
         return GuardDogResult(
             package_name=label, version=version, ecosystem=ecosystem,
             issue_count=0, findings=[], rule_errors={},
             scan_failed=True, error_message=str(e),
         )
-    return _build_result(raw, ecosystem, label, version)
 
-
-def _build_result(raw: dict, ecosystem: Ecosystem, name: str, version: str | None) -> GuardDogResult:
-    results = raw.get("results", {})
     findings = [
         GuardDogFinding(rule_name=rule, category=_categorize(rule), matches=value)
-        for rule, value in results.items()
-        if _rule_triggered(value)
+        for rule, value in raw.get("results", {}).items()
+        if rule_triggered(value)
     ]
-
     return GuardDogResult(
-        package_name=name,
-        version=version,
-        ecosystem=ecosystem,
+        package_name=label, version=version, ecosystem=ecosystem,
         issue_count=raw.get("issues", len(findings)),
         findings=findings,
         rule_errors=raw.get("errors", {}),
     )
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="GuardDog scan of an npm/PyPI package")
-    parser.add_argument("ecosystem", choices=["npm", "pypi"])
-    parser.add_argument("name")
-    parser.add_argument("--version", default=None)
-    args = parser.parse_args()
-
-    result = scan_package(args.ecosystem, args.name, args.version)
-    print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))

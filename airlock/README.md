@@ -71,7 +71,7 @@ stages, never better: a BLOCK is never cancelled by a good deps.dev score.
 | GuardDog | ≥1 `threat-*` rule (a static pattern, not a proof) | QUARANTINE |
 | Trivy | HIGH/CRITICAL CVE | QUARANTINE |
 | deps.dev | Scorecard < 3/10 on a little-used package, or package unknown | QUARANTINE |
-| install hooks | install-time code that was not detonated clean | QUARANTINE |
+| install hooks | install-time code that was not detonated clean (sensor blind, or an install phase failed / timed out) | QUARANTINE |
 | — | nothing suspicious | ALLOW |
 
 Only a behaviour **observed at detonation** can BLOCK (ADR-0007): static
@@ -94,8 +94,9 @@ Two corpora, measured as test sets (false positives / negatives):
 ## Tests
 
 ```bash
+# Offline by default (pytest.ini deselects the `network` tests):
 python3 -m pytest airlock/tests -c airlock/pytest.ini -p no:cacheprovider
-# Add real registry calls (npm/PyPI/deps.dev):
+# Only the real registry calls (npm/PyPI/deps.dev):
 python3 -m pytest airlock/tests -c airlock/pytest.ini -m network
 ```
 

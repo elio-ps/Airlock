@@ -21,7 +21,6 @@ Like Trivy, this domain must be allowed in restricted networks.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import Literal
 from urllib.parse import quote
@@ -122,103 +121,81 @@ def resolved_dependencies(ecosystem: Ecosystem, name: str, version: str) -> list
 
 
 def query_package(ecosystem: Ecosystem, name: str, version: str | None = None) -> DepsDevResult:
+    """Collect the reputation signals of one package version. Never raises."""
     system = _SYSTEM_MAP.get(ecosystem)
     if system is None:
         raise ValueError(f"Ecosystem not supported by deps.dev: {ecosystem}")
 
     try:
-        # 1. Resolve the version when not given (deps.dev needs an explicit version)
-        if version is None:
-            pkg_meta = _get(f"{API_BASE}/systems/{system}/packages/{_q(name)}")
-            versions = pkg_meta.get("versions", [])
-            if not versions:
-                raise DepsDevError(f"No version found on deps.dev for {name}")
-            # the latest release is usually at the end of the list; use the one
-            # flagged "isDefault" when available, otherwise the last one
-            default = next((v for v in versions if v.get("isDefault")), versions[-1])
-            version = default["versionKey"]["version"]
-
-        version_data = _get(
-            f"{API_BASE}/systems/{system}/packages/{_q(name)}/versions/{_q(version)}"
-        )
-
-        project_key = None
-        for link in version_data.get("relatedProjects", []) or []:
-            project_key = link.get("projectKey", {}).get("id")
-            if project_key:
-                break
-
-        scorecard_score = None
-        scorecard_checks: list[ScorecardCheck] = []
-        project_repo = None
-        dependent_count = None
-
-        if project_key:
-            project_repo = f"https://{project_key}" if not project_key.startswith("http") else project_key
-            try:
-                project_data = _get(f"{API_BASE}/projects/{_q(project_key)}")
-                scorecard = project_data.get("scorecard", {})
-                scorecard_score = scorecard.get("overallScore")
-                scorecard_checks = [
-                    ScorecardCheck(
-                        name=chk.get("name", "unknown"),
-                        score=chk.get("score"),
-                        reason=chk.get("reason", ""),
-                    )
-                    for chk in scorecard.get("checks", [])
-                ]
-            except DepsDevError:
-                pass  # project found but no scorecard computed: carry on without it
-
-        try:
-            dependents = _get(
-                f"{API_ALPHA_BASE}/systems/{system}/packages/{_q(name)}/versions/{_q(version)}:dependents"
-            )
-            dependent_count = dependents.get("directDependentCount")
-        except DepsDevError:
-            pass  # alpha endpoint: a missing count must not fail the whole stage
-
-        advisories = [a.get("id", "unknown") for a in version_data.get("advisoryKeys", []) or []]
-
-        licenses = version_data.get("licenses", []) or []
-
+        version = version or _default_version(system, name)
+        version_data = _get(f"{API_BASE}/systems/{system}/packages/{_q(name)}/versions/{_q(version)}")
+        project_key = _project_key(version_data)
+        score, checks = _scorecard(project_key) if project_key else (None, [])
         return DepsDevResult(
-            package_name=name,
-            version=version,
-            ecosystem=ecosystem,
-            scorecard_score=scorecard_score,
-            scorecard_checks=scorecard_checks,
-            default_branch_advisories=advisories,
-            dependent_count=dependent_count,
-            project_repo=project_repo,
-            licenses=licenses,
+            package_name=name, version=version, ecosystem=ecosystem,
+            scorecard_score=score,
+            scorecard_checks=checks,
+            default_branch_advisories=[a.get("id", "unknown")
+                                       for a in version_data.get("advisoryKeys") or []],
+            dependent_count=_dependent_count(system, name, version),
+            project_repo=_repo_url(project_key),
+            licenses=version_data.get("licenses") or [],
             raw=version_data,
         )
-
     except DepsDevNotFound as e:
-        return DepsDevResult(
-            package_name=name, version=version, ecosystem=ecosystem,
-            scorecard_score=None, scorecard_checks=[], default_branch_advisories=[],
-            dependent_count=None, project_repo=None, licenses=[],
-            package_unknown=True, error_message=str(e),
-        )
-    except (DepsDevError, requests.RequestException, ValueError) as e:
-        return DepsDevResult(
-            package_name=name, version=version, ecosystem=ecosystem,
-            scorecard_score=None, scorecard_checks=[], default_branch_advisories=[],
-            dependent_count=None, project_repo=None, licenses=[],
-            scan_failed=True, error_message=str(e),
-        )
+        # Unknown to deps.dev is a signal (often a brand-new package), not an outage.
+        return _empty_result(name, version, ecosystem, error_message=str(e), package_unknown=True)
+    except (DepsDevError, requests.RequestException, ValueError, KeyError) as e:
+        return _empty_result(name, version, ecosystem, error_message=str(e), scan_failed=True)
 
 
-if __name__ == "__main__":
-    import argparse
+def _default_version(system: str, name: str) -> str:
+    """deps.dev needs an explicit version: use the one it flags as default."""
+    versions = _get(f"{API_BASE}/systems/{system}/packages/{_q(name)}").get("versions", [])
+    if not versions:
+        raise DepsDevError(f"No version found on deps.dev for {name}")
+    default = next((v for v in versions if v.get("isDefault")), versions[-1])
+    return default["versionKey"]["version"]
 
-    parser = argparse.ArgumentParser(description="Query deps.dev for an npm/PyPI package")
-    parser.add_argument("ecosystem", choices=["npm", "pypi"])
-    parser.add_argument("name")
-    parser.add_argument("--version", default=None)
-    args = parser.parse_args()
 
-    result = query_package(args.ecosystem, args.name, args.version)
-    print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+def _project_key(version_data: dict) -> str | None:
+    """The source repository linked to the package, e.g. "github.com/psf/requests"."""
+    for link in version_data.get("relatedProjects") or []:
+        key = link.get("projectKey", {}).get("id")
+        if key:
+            return key
+    return None
+
+
+def _repo_url(project_key: str | None) -> str | None:
+    if project_key is None or project_key.startswith("http"):
+        return project_key
+    return f"https://{project_key}"
+
+
+def _scorecard(project_key: str) -> tuple[float | None, list[ScorecardCheck]]:
+    try:
+        scorecard = _get(f"{API_BASE}/projects/{_q(project_key)}").get("scorecard", {})
+    except DepsDevError:
+        return None, []  # project found but no scorecard computed: carry on without it
+    checks = [
+        ScorecardCheck(name=c.get("name", "unknown"), score=c.get("score"), reason=c.get("reason", ""))
+        for c in scorecard.get("checks", [])
+    ]
+    return scorecard.get("overallScore"), checks
+
+
+def _dependent_count(system: str, name: str, version: str) -> int | None:
+    url = f"{API_ALPHA_BASE}/systems/{system}/packages/{_q(name)}/versions/{_q(version)}:dependents"
+    try:
+        return _get(url).get("directDependentCount")
+    except DepsDevError:
+        return None  # alpha endpoint: a missing count must not fail the whole stage
+
+
+def _empty_result(name, version, ecosystem, **status) -> DepsDevResult:
+    return DepsDevResult(
+        package_name=name, version=version, ecosystem=ecosystem,
+        scorecard_score=None, scorecard_checks=[], default_branch_advisories=[],
+        dependent_count=None, project_repo=None, licenses=[], **status,
+    )

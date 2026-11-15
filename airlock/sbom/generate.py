@@ -17,12 +17,11 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from uuid import uuid4
 
 from cyclonedx.model import ExternalReference, ExternalReferenceType, HashAlgorithm, HashType
 from cyclonedx.model.bom import Bom
 from cyclonedx.model.component import Component, ComponentType
-from cyclonedx.model.license import DisjunctiveLicense, LicenseExpression
+from cyclonedx.model.license import LicenseExpression
 from cyclonedx.output.json import JsonV1Dot5
 from packageurl import PackageURL
 
@@ -40,7 +39,12 @@ def _npm_dependencies(extract_path: Path) -> dict[str, str]:
         data = json.loads(pkg_json.read_text(encoding="utf-8", errors="ignore"))
     except json.JSONDecodeError:
         return {}
-    return {**data.get("dependencies", {}), **data.get("optionalDependencies", {})}
+    if not isinstance(data, dict):
+        return {}
+    # Untrusted input: a non-object field is ignored rather than trusted.
+    fields = [data.get("dependencies"), data.get("optionalDependencies")]
+    return {name: str(spec) for field in fields if isinstance(field, dict)
+            for name, spec in field.items()}
 
 
 _REQUIRES_DIST_LINE_RE = re.compile(r"^Requires-Dist:\s*(.+)$")
@@ -124,14 +128,7 @@ def build_sbom(pkg: FetchedPackage, resolved: list[tuple[str, str]] | None = Non
         ExternalReference(type=ExternalReferenceType.DISTRIBUTION, url=registry_url)
     )
 
-    license_expr = None
-    if pkg.ecosystem == "npm":
-        license_expr = pkg.registry_metadata.get("license")
-        deps = _npm_dependencies(pkg.extract_path)
-    else:
-        license_expr = pkg.registry_metadata.get("license")
-        deps = _pypi_dependencies(pkg.extract_path, pkg.registry_metadata)
-
+    license_expr = pkg.registry_metadata.get("license")
     if license_expr and isinstance(license_expr, str):
         try:
             root.licenses.add(LicenseExpression(license_expr))
@@ -143,6 +140,7 @@ def build_sbom(pkg: FetchedPackage, resolved: list[tuple[str, str]] | None = Non
     # twice made the serializer rewrite its bom-ref.
 
     if resolved is not None:
+        # Exact versions from deps.dev: each one gets a purl, so Trivy can match CVEs.
         components = [
             Component(
                 name=dep_name, version=dep_version, type=ComponentType.LIBRARY,
@@ -152,6 +150,9 @@ def build_sbom(pkg: FetchedPackage, resolved: list[tuple[str, str]] | None = Non
             for dep_name, dep_version in resolved
         ]
     else:
+        # Declared ranges only: an inventory, invisible to Trivy (no exact version).
+        deps = (_npm_dependencies(pkg.extract_path) if pkg.ecosystem == "npm"
+                else _pypi_dependencies(pkg.extract_path, pkg.registry_metadata))
         components = [
             Component(
                 name=dep_name, version=dep_range, type=ComponentType.LIBRARY,
@@ -180,21 +181,3 @@ def generate_sbom_file(pkg: FetchedPackage, output_dir: Path,
     out_path.write_text(sbom_to_json(bom), encoding="utf-8")
     return out_path
 
-
-if __name__ == "__main__":
-    import argparse
-    import sys
-
-    from airlock.ingest.fetch import fetch_package
-
-    parser = argparse.ArgumentParser(description="Generate a CycloneDX SBOM for an npm/PyPI package")
-    parser.add_argument("ecosystem", choices=["npm", "pypi"])
-    parser.add_argument("name")
-    parser.add_argument("--version", default=None)
-    parser.add_argument("--out", default="./sbom_out")
-    args = parser.parse_args()
-
-    pkg = fetch_package(args.ecosystem, args.name, args.version)
-    out_path = generate_sbom_file(pkg, Path(args.out))
-    print(f"SBOM written: {out_path}", file=sys.stderr)
-    print(out_path.read_text())

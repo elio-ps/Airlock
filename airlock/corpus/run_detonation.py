@@ -8,7 +8,9 @@ stage classifies it. This is the "the corpus becomes a test set: measure false
 positives / negatives" deliverable, for the behavioural stage.
 
 A sample is predicted "malicious" when the detonation produced at least one
-finding (a Falco behaviour or a sink canary hit), and "benign" otherwise.
+finding (a Falco behaviour or a sink canary hit). Without a finding, it is
+"benign" only if the run can be trusted: a blind sensor or an install that did
+not finish gives "unavailable", which is left out of the metrics (ADR-0005).
 
 Unlike the static corpus, this one needs the whole sandbox:
   - rootless Podman and the `localhost/airlock-sandbox:1` image (build it with
@@ -57,16 +59,25 @@ def pack_sample(sample_dir: Path, ecosystem: str, dest_dir: Path) -> Path:
     return archive
 
 
+def classify(result: sandbox.DetonationResult) -> str:
+    if result.findings:
+        return "malicious"  # a finding is a proof even when the sensor was blind
+    if result.scan_failed or result.incomplete_phases:
+        return "unavailable"  # seeing nothing proves nothing
+    return "benign"
+
+
 def detonate_sample(sample_dir: Path, dest_dir: Path) -> dict:
     ecosystem = _ecosystem_of(sample_dir)
     archive = pack_sample(sample_dir, ecosystem, dest_dir)
     result = sandbox.detonate(archive, ecosystem)
-    predicted = "malicious" if result.findings else "benign"
+    predicted = classify(result)
     return {
         "sample": sample_dir.name,
         "ecosystem": ecosystem,
         "predicted": predicted,
         "sensor_alive": result.sensor_alive,
+        "incomplete_phases": result.incomplete_phases,
         "findings": [f.to_dict() for f in result.findings],
         "dns_queries": result.dns_queries,
         "duration_seconds": result.duration_seconds,
@@ -85,23 +96,26 @@ def run_detonation_eval(dest_dir: Path | None = None) -> dict:
                 continue
             record = detonate_sample(sample_dir, dest_dir)
             record["expected"] = label
-            record["correct"] = record["predicted"] == label
+            undecided = record["predicted"] == "unavailable"
+            record["correct"] = None if undecided else record["predicted"] == label
             samples.append(record)
 
     tp = sum(1 for s in samples if s["expected"] == "malicious" and s["predicted"] == "malicious")
     fn = sum(1 for s in samples if s["expected"] == "malicious" and s["predicted"] == "benign")
     tn = sum(1 for s in samples if s["expected"] == "benign" and s["predicted"] == "benign")
     fp = sum(1 for s in samples if s["expected"] == "benign" and s["predicted"] == "malicious")
-    total = len(samples) or 1
+    unavailable = sum(1 for s in samples if s["predicted"] == "unavailable")
+    decided = tp + fn + tn + fp
 
     return {
         "sensor_alive_for_all": all(s["sensor_alive"] for s in samples),
         "confusion_matrix": {
             "true_positives": tp, "false_negatives": fn,
             "true_negatives": tn, "false_positives": fp,
+            "unavailable": unavailable,
         },
         "metrics": {
-            "accuracy": (tp + tn) / total,
+            "accuracy": (tp + tn) / decided if decided else None,
             "precision": tp / (tp + fp) if (tp + fp) else None,
             "recall": tp / (tp + fn) if (tp + fn) else None,
         },
@@ -117,9 +131,13 @@ if __name__ == "__main__":
     if not report["sensor_alive_for_all"]:
         print("WARNING: Falco did not see every detonation. File-only samples "
               "(persistence, dropper) need `sudo sandbox/falco.sh start`.\n")
+    if cm["unavailable"]:
+        print(f"WARNING: {cm['unavailable']} sample(s) could not be judged and are left "
+              "out of the metrics: this report is not a valid measurement.\n")
     print(
         f"--- Summary ---\n"
         f"TP={cm['true_positives']} FN={cm['false_negatives']} "
-        f"TN={cm['true_negatives']} FP={cm['false_positives']}\n"
+        f"TN={cm['true_negatives']} FP={cm['false_positives']} "
+        f"unavailable={cm['unavailable']}\n"
         f"Full report: {REPORT_PATH}"
     )

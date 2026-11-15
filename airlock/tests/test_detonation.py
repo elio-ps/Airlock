@@ -141,3 +141,59 @@ def test_detonation_priorities_are_configurable():
         DetonationFinding("falco", "airlock_outbound_connection", "Warning", "dest=10.0.0.1"),
     ])
     assert _verdict(result, policy=Policy(block_on_detonation_priority=("Warning",))).verdict == Verdict.BLOCK
+
+
+def _phases(*lines: str) -> str:
+    return "\n".join(["[airlock] detonation starts", *lines, "[airlock] detonation ends"])
+
+
+def test_install_phases_that_exited_cleanly_are_complete():
+    log = _phases(*(f"[airlock] phase {p} exit=0" for p in ("preinstall", "install", "postinstall")),
+                  "[airlock] phase require exit=1")  # runtime phase: not install-time code
+    assert sandbox.incomplete_install_phases(log, "npm") == []
+
+
+def test_failed_or_missing_install_phase_is_incomplete():
+    assert sandbox.incomplete_install_phases(_phases("[airlock] phase install exit=1"), "pypi") \
+        == ["install (exit 1)"]
+    assert sandbox.incomplete_install_phases(_phases(), "pypi") == ["install (no exit reported)"]
+
+
+def test_forged_success_line_cannot_hide_a_failure():
+    log = _phases("[airlock] phase install exit=0", "[airlock] phase install exit=1")
+    assert sandbox.incomplete_install_phases(log, "pypi") == ["install (exit 1)"]
+
+
+def test_timed_out_run_is_incomplete():
+    log = "[airlock] phase install exit=0\n" + sandbox.TIMEOUT_MARK
+    assert sandbox.incomplete_install_phases(log, "pypi") == ["whole run (timed out)"]
+
+
+def test_wheel_is_passed_by_name_and_the_name_is_checked(tmp_path):
+    assert sandbox._archive_args(tmp_path / "pkg-1.0-py3-none-any.whl", "pypi") \
+        == ["wheel", "pkg-1.0-py3-none-any.whl"]
+    assert sandbox._archive_args(tmp_path / "pkg-1.0.tar.gz", "pypi") == ["tar"]
+    try:
+        sandbox._archive_args(tmp_path / "x$(id).whl", "pypi")
+    except sandbox.SandboxError:
+        pass
+    else:
+        raise AssertionError("a shell-unsafe wheel name must be refused")
+
+
+def test_incomplete_install_is_unavailable_and_keeps_the_hook_quarantine():
+    partial = DetonationResult(sensor_alive=True, incomplete_phases=["postinstall (exit 1)"])
+    verdict = _verdict(partial, hooks=["postinstall: node setup.js"])
+    assert verdict.verdict == Verdict.QUARANTINE
+    detonation = next(s for s in verdict.stages if s.name == "detonation")
+    assert detonation.status == StageStatus.UNAVAILABLE and "postinstall" in detonation.detail
+
+
+def test_corpus_runner_never_counts_an_untrusted_run_as_benign():
+    from airlock.corpus.run_detonation import classify
+    assert classify(DetonationResult(sensor_alive=True)) == "benign"
+    assert classify(DetonationResult(scan_failed=True)) == "unavailable"
+    assert classify(DetonationResult(sensor_alive=True, incomplete_phases=["install (exit 1)"])) \
+        == "unavailable"
+    sink_hit = DetonationFinding("sink", "canary_exfiltrated", "Critical", "tcp")
+    assert classify(DetonationResult(scan_failed=True, findings=[sink_hit])) == "malicious"

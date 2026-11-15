@@ -21,14 +21,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sys
 import tempfile
 from pathlib import Path
 
 from airlock.analysis import depsdev, guarddog_scan, trivy_scan
 from airlock.detonation import sandbox
-from airlock.ingest.fetch import FetchError, fetch_local, fetch_package, safe_slug
+from airlock.ingest.fetch import (
+    FetchedPackage, FetchError, fetch_local, fetch_package, safe_slug,
+)
 from airlock.sbom.generate import generate_sbom_file
 from airlock.verdict.aggregate import Policy, aggregate
 
@@ -49,132 +50,155 @@ def run_pipeline(
     trivy_timeout: int = 120,
     local_archive: Path | None = None,
 ) -> dict:
-    skip = set(skip or set())
+    """Run every stage on one package and return the full report (also saved to disk)."""
+    skip = set(skip or ())
 
     def log(msg: str) -> None:
         if verbose:
             print(f"[airlock] {msg}", file=sys.stderr)
 
-    workdir = Path(tempfile.mkdtemp(prefix="airlock-"))
-    try:
-        return _run_stages(ecosystem, name, version, skip, policy, log,
-                           trivy_timeout, local_archive, workdir)
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+    # The downloaded archive and its extracted files are deleted at the end.
+    with tempfile.TemporaryDirectory(prefix="airlock-") as tmp:
+        try:
+            pkg = _ingest(ecosystem, name, version, local_archive, Path(tmp), log)
+        except FetchError as e:
+            log(f"Ingestion FAILED: {e}")
+            return {"error": f"ingestion failed: {e}"}
 
+        if pkg.origin == "local" and "depsdev" not in skip:
+            skip.add("depsdev")
+            log("  -> local package: deps.dev stage skipped (no registry to query)")
 
-def _run_stages(ecosystem, name, version, skip, policy, log,
-                trivy_timeout, local_archive, workdir) -> dict:
-    # --- 1. Ingestion ---
-    try:
-        if local_archive is not None:
-            log(f"Ingesting local archive {local_archive} ({ecosystem})...")
-            pkg = fetch_local(ecosystem, local_archive, workdir=workdir)
-            # A local package exists on no registry: deps.dev has nothing to say.
-            if "depsdev" not in skip:
-                skip.add("depsdev")
-                log("  -> local package: deps.dev stage skipped (no registry to query)")
-        else:
-            if not name:
-                return {"error": "ingestion failed: missing package name (or --local required)"}
-            log(f"Ingesting {ecosystem}:{name}{'@' + version if version else ''}...")
-            pkg = fetch_package(ecosystem, name, version, workdir=workdir)
-    except FetchError as e:
-        log(f"Ingestion FAILED: {e}")
-        return {"error": f"ingestion failed: {e}"}
-    log(f"  -> {pkg.name}@{pkg.version} fetched, sha256={pkg.sha256[:12]}...")
+        run_dir = WORKDIR_ROOT / f"{pkg.ecosystem}-{safe_slug(pkg.name)}-{safe_slug(pkg.version)}"
+        run_dir.mkdir(parents=True, exist_ok=True)
 
-    run_dir = WORKDIR_ROOT / f"{pkg.ecosystem}-{safe_slug(pkg.name)}-{safe_slug(pkg.version)}"
-    run_dir.mkdir(parents=True, exist_ok=True)
+        sbom_path, sbom_error = None, None
+        if "sbom" not in skip:
+            sbom_path, sbom_error = _run_sbom(pkg, run_dir, skip, log)
+        # Trivy reads the SBOM: without one it has nothing to scan.
+        trivy_result = None
+        if "trivy" not in skip and sbom_path is not None:
+            trivy_result = _run_trivy(sbom_path, trivy_timeout, log)
+        guarddog_result = _run_guarddog(pkg, log) if "guarddog" not in skip else None
+        depsdev_result = _run_depsdev(pkg, log) if "depsdev" not in skip else None
+        detonation_result = _run_detonation(pkg, log) if "detonation" not in skip else None
 
-    # --- 2. SBOM ---
-    sbom_path = None
-    if "sbom" not in skip:
-        log("Generating the CycloneDX SBOM...")
-        resolved = None
-        if pkg.origin == "registry" and "depsdev" not in skip:
-            resolved = depsdev.resolved_dependencies(pkg.ecosystem, pkg.name, pkg.version)
-        if resolved is None:
-            log("  -> dependency graph unavailable: declared ranges only, CVE coverage is partial")
-        sbom_path = generate_sbom_file(pkg, run_dir / "sbom", resolved)
-        log(f"  -> {sbom_path}")
-
-    # --- 3. Trivy (needs the SBOM) ---
-    trivy_result = None
-    if "trivy" not in skip and sbom_path is not None:
-        log("Trivy scan (CVEs)...")
-        trivy_result = trivy_scan.scan_sbom(sbom_path, timeout=trivy_timeout)
-        if trivy_result.scan_failed:
-            log(f"  -> unavailable: {trivy_result.error_message[:150]}")
-        else:
-            log(f"  -> {len(trivy_result.findings)} CVE(s) found")
-
-    # --- 4. GuardDog ---
-    guarddog_result = None
-    if "guarddog" not in skip:
-        log("GuardDog scan (behaviour)...")
-        # Always the ingested bytes: a second download could return something else.
-        guarddog_result = guarddog_scan.scan_local(
-            pkg.ecosystem, pkg.source_root, pkg.name, pkg.version,
-            info=pkg.registry_package_info,
+        log("Aggregating the verdict...")
+        verdict = aggregate(
+            package_name=pkg.name, version=pkg.version, ecosystem=pkg.ecosystem,
+            trivy_result=trivy_result, guarddog_result=guarddog_result,
+            depsdev_result=depsdev_result, detonation_result=detonation_result,
+            sbom_path=sbom_path, sbom_error=sbom_error, policy=policy,
+            skipped=skip, install_hooks=pkg.install_hooks,
         )
-        if guarddog_result.scan_failed:
-            log(f"  -> unavailable: {guarddog_result.error_message[:150]}")
-        else:
-            log(f"  -> {guarddog_result.issue_count} signal(s), "
-                f"{len(guarddog_result.threat_findings)} threat")
+        log(f"  -> VERDICT: {verdict.verdict.value.upper()}")
 
-    # --- 5. deps.dev ---
-    depsdev_result = None
-    if "depsdev" not in skip:
-        log("deps.dev query (reputation)...")
-        depsdev_result = depsdev.query_package(pkg.ecosystem, pkg.name, pkg.version)
-        if depsdev_result.scan_failed:
-            log(f"  -> unavailable: {depsdev_result.error_message[:150]}")
-        else:
-            log(f"  -> Scorecard={depsdev_result.scorecard_score}")
+        report = {
+            "package": pkg.to_dict(),
+            "verdict": verdict.to_dict(),
+            "details": {
+                "trivy": trivy_result.to_dict() if trivy_result else None,
+                "guarddog": guarddog_result.to_dict() if guarddog_result else None,
+                "depsdev": depsdev_result.to_dict() if depsdev_result else None,
+                "detonation": detonation_result.to_dict() if detonation_result else None,
+            },
+        }
+        # Kept after the run, for the corpus and for audit.
+        report_path = run_dir / "report.json"
+        report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+        log(f"Full report: {report_path}")
+        return report
 
-    # --- 6. Detonation ---
-    detonation_result = None
-    if "detonation" not in skip:
-        log("Detonation in the sandbox (behaviour)...")
-        detonation_result = sandbox.detonate(pkg.archive_path, pkg.ecosystem)
-        if detonation_result.scan_failed:
-            log(f"  -> unavailable: {detonation_result.error_message[:150]}")
-        log(f"  -> {len(detonation_result.findings)} behaviour(s) observed "
-            f"in {detonation_result.duration_seconds}s")
 
-    # --- 7. Verdict ---
-    log("Aggregating the verdict...")
-    verdict = aggregate(
-        package_name=pkg.name, version=pkg.version, ecosystem=pkg.ecosystem,
-        trivy_result=trivy_result, guarddog_result=guarddog_result,
-        depsdev_result=depsdev_result, detonation_result=detonation_result,
-        sbom_path=sbom_path, policy=policy,
-        skipped=skip, install_hooks=pkg.install_hooks,
+# --- One function per stage -------------------------------------------------
+# Each one logs what it does and returns the stage result. None of them raises
+# on a scanner failure: the result says "scan_failed" instead.
+
+def _ingest(ecosystem, name, version, local_archive, workdir, log) -> FetchedPackage:
+    if local_archive is not None:
+        log(f"Ingesting local archive {local_archive} ({ecosystem})...")
+        pkg = fetch_local(ecosystem, local_archive, workdir=workdir)
+    elif not name:
+        raise FetchError("missing package name (or --local required)")
+    else:
+        log(f"Ingesting {ecosystem}:{name}{'@' + version if version else ''}...")
+        pkg = fetch_package(ecosystem, name, version, workdir=workdir)
+    log(f"  -> {pkg.name}@{pkg.version} fetched, sha256={pkg.sha256[:12]}...")
+    return pkg
+
+
+def _run_sbom(pkg, run_dir, skip, log) -> tuple[Path | None, str | None]:
+    """Return (SBOM path, None) on success, (None, error) on failure."""
+    log("Generating the CycloneDX SBOM...")
+    resolved = None
+    if pkg.origin == "registry" and "depsdev" not in skip:
+        resolved = depsdev.resolved_dependencies(pkg.ecosystem, pkg.name, pkg.version)
+    if resolved is None:
+        log("  -> dependency graph unavailable: declared ranges only, CVE coverage is partial")
+    try:
+        sbom_path = generate_sbom_file(pkg, run_dir / "sbom", resolved)
+    except Exception as e:  # untrusted metadata must not crash the whole pipeline
+        error = f"{type(e).__name__}: {e}"
+        log(f"  -> unavailable: {error[:150]}")
+        return None, error
+    log(f"  -> {sbom_path}")
+    return sbom_path, None
+
+
+def _run_trivy(sbom_path, timeout, log):
+    log("Trivy scan (CVEs)...")
+    result = trivy_scan.scan_sbom(sbom_path, timeout=timeout)
+    if result.scan_failed:
+        log(f"  -> unavailable: {result.error_message[:150]}")
+    else:
+        log(f"  -> {len(result.findings)} CVE(s) found")
+    return result
+
+
+def _run_guarddog(pkg, log):
+    log("GuardDog scan (behaviour)...")
+    # Always the ingested bytes: a second download could return something else.
+    result = guarddog_scan.scan_local(
+        pkg.ecosystem, pkg.source_root, pkg.name, pkg.version, info=pkg.registry_package_info,
     )
-    log(f"  -> VERDICT: {verdict.verdict.value.upper()}")
+    if result.scan_failed:
+        log(f"  -> unavailable: {result.error_message[:150]}")
+    else:
+        log(f"  -> {result.issue_count} signal(s), {len(result.threat_findings)} threat")
+    return result
 
-    # persist the full report for the corpus and for audit
-    report = {
-        "package": pkg.to_dict(),
-        "verdict": verdict.to_dict(),
-        "details": {
-            "trivy": trivy_result.to_dict() if trivy_result else None,
-            "guarddog": guarddog_result.to_dict() if guarddog_result else None,
-            "depsdev": depsdev_result.to_dict() if depsdev_result else None,
-            "detonation": detonation_result.to_dict() if detonation_result else None,
-        },
-    }
-    report_path = run_dir / "report.json"
-    report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-    log(f"Full report: {report_path}")
 
-    return report
+def _run_depsdev(pkg, log):
+    log("deps.dev query (reputation)...")
+    result = depsdev.query_package(pkg.ecosystem, pkg.name, pkg.version)
+    if result.scan_failed:
+        log(f"  -> unavailable: {result.error_message[:150]}")
+    else:
+        log(f"  -> Scorecard={result.scorecard_score}")
+    return result
+
+
+def _run_detonation(pkg, log):
+    log("Detonation in the sandbox (behaviour)...")
+    result = sandbox.detonate(pkg.archive_path, pkg.ecosystem)
+    if result.scan_failed:
+        log(f"  -> unavailable: {result.error_message[:150]}")
+    if result.incomplete_phases:
+        log(f"  -> install incomplete: {', '.join(result.incomplete_phases)}")
+    log(f"  -> {len(result.findings)} behaviour(s) observed in {result.duration_seconds}s")
+    return result
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    """argparse exits with 2 on a usage error, which is the QUARANTINE code here."""
+
+    def error(self, message: str) -> None:
+        self.print_usage(sys.stderr)
+        self.exit(EXIT_ERROR, f"{self.prog}: error: {message}\n")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Airlock package analysis pipeline")
+    parser = _ArgumentParser(description="Airlock package analysis pipeline")
     parser.add_argument("ecosystem", choices=["npm", "pypi"])
     parser.add_argument("name", nargs="?", default=None,
                          help="package name (omitted with --local)")
@@ -196,7 +220,10 @@ def main() -> None:
         parser.error("--local and a package name are mutually exclusive")
 
     skip = {s.strip() for s in args.skip.split(",") if s.strip()}
-    policy = Policy.from_file(args.policy) if args.policy else None
+    try:
+        policy = Policy.from_file(args.policy) if args.policy else None
+    except ValueError as e:
+        parser.error(str(e))
 
     report = run_pipeline(
         args.ecosystem, args.name, args.version,

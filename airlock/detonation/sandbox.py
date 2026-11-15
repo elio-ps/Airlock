@@ -49,6 +49,13 @@ FALCO_FLUSH_TIMEOUT = 6  # seconds to wait for the sentinel after the run
 MAX_LOG_CHARS = 20_000
 
 SENTINEL_RULE = "airlock_sentinel"
+TIMEOUT_MARK = "[airlock] detonation timed out"
+# Phases of detonate.sh that run install-time code. If one does not finish
+# cleanly, part of that code never ran, so observing nothing proves nothing.
+INSTALL_PHASES = {"npm": ("preinstall", "install", "postinstall"), "pypi": ("install",)}
+_PHASE_EXIT_RE = re.compile(r"^\[airlock\] phase (\w+) exit=(\d+)$", re.MULTILINE)
+# pip only installs a wheel from a file that carries its wheel name.
+_WHEEL_NAME_RE = re.compile(r"[A-Za-z0-9_.+-]+\.whl")
 LOCK_FILE = Path(tempfile.gettempdir()) / "airlock-detonation.lock"
 
 _CONTAINER_LIMITS = [
@@ -76,6 +83,7 @@ class DetonationFinding:
 class DetonationResult:
     findings: list[DetonationFinding] = field(default_factory=list)
     sensor_alive: bool = False  # Falco reported the sentinel of this run
+    incomplete_phases: list[str] = field(default_factory=list)  # install phases that did not finish
     dns_queries: list[str] = field(default_factory=list)
     log: str = ""
     duration_seconds: float = 0.0
@@ -86,6 +94,7 @@ class DetonationResult:
         return {
             "findings": [f.to_dict() for f in self.findings],
             "sensor_alive": self.sensor_alive,
+            "incomplete_phases": self.incomplete_phases,
             "dns_queries": self.dns_queries,
             "log": self.log,
             "duration_seconds": self.duration_seconds,
@@ -128,8 +137,37 @@ def _start_sink(name: str) -> None:
     raise SandboxError("the network sink did not start")
 
 
-def _archive_format(archive: Path) -> str:
-    return "zip" if archive.name.endswith((".whl", ".zip")) else "tar"
+def _archive_args(archive: Path, ecosystem: str) -> list[str]:
+    """Arguments telling detonate.sh how to unpack the archive."""
+    if ecosystem == "pypi" and archive.name.endswith(".whl"):
+        # The wheel name comes from the registry and reaches a shell: check it strictly.
+        if not _WHEEL_NAME_RE.fullmatch(archive.name):
+            raise SandboxError(f"unexpected wheel file name: {archive.name!r}")
+        return ["wheel", archive.name]
+    return ["zip" if archive.name.endswith(".zip") else "tar"]
+
+
+def incomplete_install_phases(log: str, ecosystem: str) -> list[str]:
+    """
+    Install-time phases that did not run to a clean end (failed, killed, missing).
+
+    The package writes to the same stdout as these markers and could print a
+    fake "exit=0", so a phase is complete only when every report of it says 0:
+    a forged line can make a run look worse, never better.
+    """
+    exits: dict[str, list[int]] = {}
+    for phase, code in _PHASE_EXIT_RE.findall(log):
+        exits.setdefault(phase, []).append(int(code))
+    incomplete = []
+    for phase in INSTALL_PHASES[ecosystem]:
+        failures = [code for code in exits.get(phase, []) if code != 0]
+        if phase not in exits:
+            incomplete.append(f"{phase} (no exit reported)")
+        elif failures:
+            incomplete.append(f"{phase} (exit {failures[0]})")
+    if TIMEOUT_MARK in log:
+        incomplete.append("whole run (timed out)")
+    return incomplete
 
 
 def _falco_offset() -> int | None:
@@ -275,7 +313,8 @@ def _detonate(archive: Path, ecosystem: str, timeout: int) -> DetonationResult:
         _start_sink(sink)
         offset = _falco_offset()
         with open(archive, "rb") as stdin:
-            log = _run_target(target, stdin, ecosystem, _archive_format(archive), canary, timeout)
+            log = _run_target(target, stdin, ecosystem, _archive_args(archive, ecosystem),
+                              canary, timeout)
         container_id = _podman("inspect", target, "--format", "{{.Id}}").stdout.strip()
         sink_log = _podman("logs", sink, check=False).stdout
     finally:
@@ -289,6 +328,7 @@ def _detonate(archive: Path, ecosystem: str, timeout: int) -> DetonationResult:
     return DetonationResult(
         findings=[*_falco_findings(events), *sink_findings],
         sensor_alive=sensor_alive,
+        incomplete_phases=incomplete_install_phases(log, ecosystem),
         dns_queries=dns_queries[:50],
         log=log.replace(canary, "<canary>")[-MAX_LOG_CHARS:],
         scan_failed=not sensor_alive,
@@ -296,7 +336,7 @@ def _detonate(archive: Path, ecosystem: str, timeout: int) -> DetonationResult:
     )
 
 
-def _run_target(name: str, stdin, ecosystem: str, archive_format: str,
+def _run_target(name: str, stdin, ecosystem: str, archive_args: list[str],
                 canary: str, timeout: int) -> str:
     # No --rm: the container id is read after the run. _detonate always removes it.
     cmd = [
@@ -307,13 +347,13 @@ def _run_target(name: str, stdin, ecosystem: str, archive_format: str,
         "--tmpfs", "/tmp:rw,exec,mode=1777",
         "--tmpfs", "/work:rw,exec,mode=1777",
         "--env", f"AIRLOCK_CANARY={canary}", "--env", "AIRLOCK_SANDBOX=1", "--env", "HOME=/home/dev",
-        IMAGE, "/opt/airlock/detonate.sh", ecosystem, archive_format,
+        IMAGE, "/opt/airlock/detonate.sh", ecosystem, *archive_args,
     ]
     try:
         proc = subprocess.run(cmd, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                               timeout=timeout, check=False)
     except subprocess.TimeoutExpired as e:
-        return (e.stdout or b"").decode("utf-8", "replace") + "\n[airlock] detonation timed out"
+        return (e.stdout or b"").decode("utf-8", "replace") + "\n" + TIMEOUT_MARK
     output = proc.stdout.decode("utf-8", "replace")
     if "[airlock] detonation starts" not in output:
         raise SandboxError(f"the sandbox did not start (exit {proc.returncode}): {output[-500:]}")

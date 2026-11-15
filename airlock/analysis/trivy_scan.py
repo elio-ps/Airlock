@@ -20,14 +20,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-class TrivyNotFoundError(Exception):
-    """The trivy binary cannot be found in PATH."""
-
-
-class TrivyScanError(Exception):
-    """Error while running trivy."""
-
-
 @dataclass
 class TrivyFinding:
     vuln_id: str          # e.g. CVE-2023-32681
@@ -76,90 +68,51 @@ class TrivyResult:
         }
 
 
-def _find_trivy_binary() -> str:
-    binary = shutil.which("trivy")
-    if binary is None:
-        raise TrivyNotFoundError(
-            "The 'trivy' binary is not in PATH. "
-            "Install it: https://aquasecurity.github.io/trivy/latest/getting-started/installation/"
-        )
-    return binary
+def _failed(sbom_path: Path, message: str) -> TrivyResult:
+    return TrivyResult(sbom_path=sbom_path, findings=[], raw_output={},
+                       scan_failed=True, error_message=message)
 
 
 def scan_sbom(sbom_path: Path, cache_dir: Path | None = None, timeout: int = 120) -> TrivyResult:
     """
     Run `trivy sbom <file>` with JSON output and parse the vulnerabilities.
 
-    On a network failure (DB unreachable) or a trivy error, no fatal exception
-    is raised: a TrivyResult with scan_failed=True and the error message is
-    returned, so that the pipeline can carry on and mark this signal as
-    "unavailable".
+    Never raises: on a missing binary, a network failure (DB unreachable) or a
+    trivy error, the result has scan_failed=True, so that the pipeline carries
+    on and marks this signal as "unavailable".
     """
-    try:
-        binary = _find_trivy_binary()
-    except TrivyNotFoundError as e:
-        return TrivyResult(
-            sbom_path=sbom_path, findings=[], raw_output={},
-            scan_failed=True, error_message=str(e),
-        )
+    binary = shutil.which("trivy")
+    if binary is None:
+        return _failed(sbom_path, "The 'trivy' binary is not in PATH. Install it: "
+                       "https://aquasecurity.github.io/trivy/latest/getting-started/installation/")
 
     cmd = [binary, "sbom", str(sbom_path), "--format", "json", "--quiet"]
     if cache_dir is not None:
         cmd += ["--cache-dir", str(cache_dir)]
 
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, check=False
-        )
-    except subprocess.TimeoutExpired as e:
-        return TrivyResult(
-            sbom_path=sbom_path, findings=[], raw_output={},
-            scan_failed=True, error_message=f"Trivy timed out after {timeout}s: {e}",
-        )
-
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        return _failed(sbom_path, f"Trivy timed out after {timeout}s")
     if proc.returncode != 0:
-        return TrivyResult(
-            sbom_path=sbom_path, findings=[], raw_output={},
-            scan_failed=True,
-            error_message=proc.stderr.strip()[-2000:] or "trivy failed without an error message",
-        )
+        return _failed(sbom_path, proc.stderr.strip()[-2000:] or "trivy failed without an error message")
 
     try:
         data = json.loads(proc.stdout)
     except json.JSONDecodeError:
-        return TrivyResult(
-            sbom_path=sbom_path, findings=[], raw_output={},
-            scan_failed=True, error_message="Trivy output is not JSON, cannot parse it",
+        return _failed(sbom_path, "Trivy output is not JSON, cannot parse it")
+
+    findings = [
+        TrivyFinding(
+            vuln_id=vuln.get("VulnerabilityID", "UNKNOWN"),
+            pkg_name=vuln.get("PkgName", "unknown"),
+            installed_version=vuln.get("InstalledVersion", "unknown"),
+            fixed_version=vuln.get("FixedVersion"),
+            severity=vuln.get("Severity", "UNKNOWN"),
+            title=(vuln.get("Title") or vuln.get("Description") or "")[:200],
+            references=(vuln.get("References") or [])[:5],
         )
-
-    findings: list[TrivyFinding] = []
-    for result in data.get("Results", []) or []:
-        for vuln in result.get("Vulnerabilities", []) or []:
-            findings.append(
-                TrivyFinding(
-                    vuln_id=vuln.get("VulnerabilityID", "UNKNOWN"),
-                    pkg_name=vuln.get("PkgName", "unknown"),
-                    installed_version=vuln.get("InstalledVersion", "unknown"),
-                    fixed_version=vuln.get("FixedVersion"),
-                    severity=vuln.get("Severity", "UNKNOWN"),
-                    title=(vuln.get("Title") or vuln.get("Description") or "")[:200],
-                    references=(vuln.get("References") or [])[:5],
-                )
-            )
-
+        for result in data.get("Results") or []
+        for vuln in result.get("Vulnerabilities") or []
+    ]
     return TrivyResult(sbom_path=sbom_path, findings=findings, raw_output=data)
-
-
-if __name__ == "__main__":
-    import argparse
-    import sys
-
-    parser = argparse.ArgumentParser(description="Trivy vulnerability scan of a CycloneDX SBOM")
-    parser.add_argument("sbom_path", type=Path)
-    parser.add_argument("--cache-dir", type=Path, default=None)
-    args = parser.parse_args()
-
-    result = scan_sbom(args.sbom_path, cache_dir=args.cache_dir)
-    print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
-    if result.scan_failed:
-        sys.exit(2)
