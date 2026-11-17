@@ -34,6 +34,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -56,7 +57,10 @@ INSTALL_PHASES = {"npm": ("preinstall", "install", "postinstall"), "pypi": ("ins
 _PHASE_EXIT_RE = re.compile(r"^\[airlock\] phase (\w+) exit=(\d+)$", re.MULTILINE)
 # pip only installs a wheel from a file that carries its wheel name.
 _WHEEL_NAME_RE = re.compile(r"[A-Za-z0-9_.+-]+\.whl")
-LOCK_FILE = Path(tempfile.gettempdir()) / "airlock-detonation.lock"
+# Per-user runtime directory when there is one: a shared /tmp lets another local
+# user plant a symlink at a predictable name.
+LOCK_FILE = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()) / "airlock-detonation.lock"
+MAX_INFLATED_BYTES = 1024 * 1024  # cap on a decompressed payload: it is attacker data
 
 _CONTAINER_LIMITS = [
     "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
@@ -190,6 +194,10 @@ def _read_falco_events(offset: int | None, container_id: str) -> list[dict]:
     if events:
         time.sleep(1)  # the kernel ring buffer delivers the last events slightly later
         events = _parse_falco_events(offset, container_id)
+    # Falco merges per-CPU buffers; ordering by the event's own timestamp makes
+    # "after the sentinel" mean after it in time, not just later in the file.
+    if all(isinstance(e.get("time"), str) for e in events):
+        events.sort(key=lambda e: e["time"])
     for index, event in enumerate(events):
         if event.get("rule") == SENTINEL_RULE:
             return events[index:]
@@ -226,7 +234,23 @@ def _decoded_views(data: bytes) -> list[bytes]:
             views.append(base64.b64decode(padded + b"=" * (-len(padded) % 4)))
         except binascii.Error:
             pass
+    # Compressed bodies (gzip, zlib, raw deflate), in the payload or once decoded.
+    views.extend(inflated for view in list(views) if (inflated := _inflate(view)))
     return views
+
+
+def _inflate(data: bytes) -> bytes | None:
+    """Decompress a gzip/zlib/deflate stream found anywhere in data, bounded in size."""
+    starts = [m.start() for m in re.finditer(rb"\x1f\x8b|\x78[\x01\x5e\x9c\xda]", data)][:8]
+    for start in [*starts, 0]:
+        for wbits in (47, -15):  # 47: gzip or zlib header, auto-detected; -15: raw deflate
+            try:
+                out = zlib.decompressobj(wbits).decompress(data[start:], MAX_INFLATED_BYTES)
+            except zlib.error:
+                continue
+            if out:
+                return out
+    return None
 
 
 def _contains_canary(data: bytes, canary: str) -> bool:
@@ -238,41 +262,61 @@ def analyse_sink_log(log: str, canary: str) -> tuple[list[DetonationFinding], li
     """Turn the sink's JSON lines into findings and the list of DNS names queried."""
     findings: list[DetonationFinding] = []
     names: list[str] = []
-    # DNS exfiltration splits data across many queries, so the leading labels are
-    # reassembled per base domain before looking for the canary (see _dns_findings).
-    dns_streams: dict[str, list[str]] = {}
     for line in log.splitlines():
         try:
             record = json.loads(line)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError):
             continue
-        if record.get("kind") == "dns":
-            name = record.get("name", "")
-            names.append(name)
-            first_label, _, suffix = name.partition(".")
-            dns_streams.setdefault(suffix, []).append(first_label)
-        elif record.get("kind") == "tcp":
-            data = base64.b64decode(record.get("data", ""))
+        if not isinstance(record, dict):
+            continue
+        kind = record.get("kind")
+        if kind == "dns":
+            names.append(str(record.get("name", "")))
+        elif kind in ("tcp", "dns_malformed"):
+            try:
+                data = base64.b64decode(record.get("data", ""))
+            except (binascii.Error, ValueError):
+                continue
             if _contains_canary(data, canary):
+                where = (f"TCP port {record.get('port')}" if kind == "tcp"
+                         else "a malformed DNS packet")
                 findings.append(DetonationFinding(
-                    "sink", "canary_exfiltrated", "Critical",
-                    f"canary token sent over TCP port {record.get('port')}",
+                    "sink", "canary_exfiltrated", "Critical", f"canary token sent over {where}",
                 ))
-    findings.extend(_dns_findings(dns_streams, canary))
+    findings.extend(_dns_findings(names, canary))
     return findings, names
 
 
-def _dns_findings(dns_streams: dict[str, list[str]], canary: str) -> list[DetonationFinding]:
-    """One finding per base domain whose reassembled leading labels carry the canary."""
-    findings = []
-    for suffix, labels in dns_streams.items():
-        reassembled = "".join(labels).encode()
-        if _contains_canary(reassembled, canary):
-            findings.append(DetonationFinding(
-                "sink", "canary_exfiltrated", "Critical",
-                f"canary token sent over DNS to {suffix or '(root)'} ({len(labels)} queries)",
-            ))
-    return findings
+def _dns_findings(names: list[str], canary: str) -> list[DetonationFinding]:
+    """
+    DNS exfiltration splits data across many queries, so labels are reassembled
+    before looking for the canary, in two ways, one finding per base domain:
+      - the first label of every query, grouped by the rest of the name
+        (`<chunk>.probe.example.invalid`, the home-made sample's technique);
+      - every label left of the last two, grouped by those two labels
+        (`<chunk1>.<chunk2>.example.invalid`, several chunks per query).
+    The canary is random per run, so a wider grouping cannot create a false
+    positive: it can only find more.
+    """
+    by_suffix: dict[str, list[str]] = {}
+    by_base: dict[str, list[str]] = {}
+    for name in names:
+        labels = name.split(".")
+        by_suffix.setdefault(".".join(labels[1:]), []).append(labels[0])
+        by_base.setdefault(".".join(labels[-2:]), []).append("".join(labels[:-2]))
+
+    hits: dict[str, int] = {}  # base domain -> number of queries
+    for suffix, chunks in by_suffix.items():
+        if _contains_canary("".join(chunks).encode(), canary):
+            hits[".".join(suffix.split(".")[-2:])] = len(chunks)
+    for base, chunks in by_base.items():
+        if base not in hits and _contains_canary("".join(chunks).encode(), canary):
+            hits[base] = len(chunks)
+    return [
+        DetonationFinding("sink", "canary_exfiltrated", "Critical",
+                          f"canary token sent over DNS to {base or '(root)'} ({count} queries)")
+        for base, count in hits.items()
+    ]
 
 
 def _falco_findings(events: list[dict]) -> list[DetonationFinding]:
@@ -294,7 +338,8 @@ def detonate(archive: Path, ecosystem: str, timeout: int = DEFAULT_TIMEOUT) -> D
     started = time.monotonic()
     try:
         # One detonation at a time: the sink owns a fixed address on the network.
-        with open(LOCK_FILE, "w", encoding="utf-8") as lock:
+        fd = os.open(LOCK_FILE, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        with os.fdopen(fd, "r+") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             result = _detonate(archive, ecosystem, timeout)
     except (SandboxError, OSError, subprocess.SubprocessError) as e:

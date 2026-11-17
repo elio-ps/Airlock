@@ -75,12 +75,22 @@
   priority: CRITICAL
   tags: [airlock, persistence]
 
+# A dropped script ("#!/bin/sh") is exec'd by the kernel as "/bin/sh <script>":
+# proc.exepath then names the interpreter, proc.name the script, and the dropped
+# path is only visible as the first argument. Interpreters are matched on their
+# resolved path in the sandbox image, which the package cannot rename.
+- list: airlock_script_interpreters
+  items: [/usr/bin/dash, /bin/dash, /usr/bin/sh, /bin/sh, /usr/bin/bash, /bin/bash,
+          /usr/bin/python3, /usr/bin/python3.11, /usr/local/bin/node, /usr/bin/perl]
+
 - rule: airlock_exec_from_writable_dir
-  desc: A program dropped in a temporary or home directory was executed
+  desc: A program or script dropped in a temporary or home directory was executed
   condition: >
     airlock_exec and airlock_in_container and
     (proc.exe startswith /tmp/ or proc.exe startswith /dev/shm/ or proc.exe startswith /home/dev/
-     or proc.exepath startswith /tmp/ or proc.exepath startswith /dev/shm/ or proc.exepath startswith /home/dev/)
+     or proc.exepath startswith /tmp/ or proc.exepath startswith /dev/shm/ or proc.exepath startswith /home/dev/
+     or (proc.exepath in (airlock_script_interpreters) and
+         (proc.args startswith /tmp/ or proc.args startswith /dev/shm/ or proc.args startswith /home/dev/)))
   output: dropped program executed (exe=%proc.exepath cmd=%proc.cmdline parent=%proc.pname container=%container.id)
   priority: CRITICAL
   tags: [airlock, execution]

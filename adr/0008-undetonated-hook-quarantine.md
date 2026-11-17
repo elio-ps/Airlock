@@ -17,7 +17,10 @@ static analysis cannot vouch for code it cannot see running.
 ## Decision
 Option 2 (`Policy.quarantine_on_undetonated_hook`, default `True`). Install-time
 code means npm `preinstall`, `install`, `postinstall`, an implicit `node-gyp`
-build (`binding.gyp`), or a `setup.py` in a PyPI sdist.
+build (`binding.gyp`), or a PyPI sdist: one with a `setup.py`, or since
+2026-11-17 one with only a `pyproject.toml`, because building it runs its build
+backend, which can be shipped in-tree (`backend-path`) or call package build
+hooks (`hatch_build.py`, setuptools plugins). Wheels are never built.
 
 ## Consequences
 + The known gap is closed and the matching xfail test removed.

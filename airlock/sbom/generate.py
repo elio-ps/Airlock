@@ -92,6 +92,13 @@ def _pypi_dependencies(extract_path: Path, registry_metadata: dict) -> dict[str,
     return {}
 
 
+def declared_dependencies(pkg: FetchedPackage) -> dict[str, str]:
+    """Direct dependencies as declared by the package: name -> version range."""
+    if pkg.ecosystem == "npm":
+        return _npm_dependencies(pkg.extract_path)
+    return _pypi_dependencies(pkg.extract_path, pkg.registry_metadata)
+
+
 def _make_purl(ecosystem: str, name: str, version: str) -> PackageURL:
     if ecosystem == "npm":
         namespace, _, short_name = name.rpartition("/")  # "@scope/pkg" or "pkg"
@@ -151,8 +158,7 @@ def build_sbom(pkg: FetchedPackage, resolved: list[tuple[str, str]] | None = Non
         ]
     else:
         # Declared ranges only: an inventory, invisible to Trivy (no exact version).
-        deps = (_npm_dependencies(pkg.extract_path) if pkg.ecosystem == "npm"
-                else _pypi_dependencies(pkg.extract_path, pkg.registry_metadata))
+        deps = declared_dependencies(pkg)
         components = [
             Component(
                 name=dep_name, version=dep_range, type=ComponentType.LIBRARY,

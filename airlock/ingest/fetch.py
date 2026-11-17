@@ -19,6 +19,7 @@ import json
 import re
 import tarfile
 import tempfile
+import tomllib
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -106,9 +107,31 @@ def _npm_install_hooks(root: Path) -> list[str]:
 
 
 def _pypi_install_hooks(extract_path: Path) -> list[str]:
-    # An sdist with a setup.py runs arbitrary code when built. Wheels never do.
-    found = [*extract_path.glob("setup.py"), *extract_path.glob("*/setup.py")]
-    return ["setup.py"] if found else []
+    """
+    Installing an sdist means building it, and a build runs code from the
+    package: its setup.py, or through pyproject.toml an in-tree backend
+    (`backend-path`) or build hooks (hatch_build.py, a setuptools plugin...).
+    Wheels are unpacked, never built: their code only runs when imported.
+    """
+    if [*extract_path.glob("setup.py"), *extract_path.glob("*/setup.py")]:
+        return ["setup.py"]
+    for pyproject in [*extract_path.glob("pyproject.toml"), *extract_path.glob("*/pyproject.toml")]:
+        return [f"pyproject.toml build ({_build_backend(pyproject)})"]
+    return []
+
+
+def _build_backend(pyproject: Path) -> str:
+    """Name the build backend for the report; untrusted file, so never fails."""
+    try:
+        system = tomllib.loads(pyproject.read_text(encoding="utf-8", errors="ignore")).get("build-system")
+    except (OSError, tomllib.TOMLDecodeError):
+        return "unreadable build-system"
+    if not isinstance(system, dict):
+        return "no build-system, setuptools by default"
+    backend = str(system.get("build-backend") or "setuptools by default")
+    if system.get("backend-path"):
+        backend += ", in-tree backend shipped by the package"
+    return f"backend: {backend}"
 
 
 def safe_slug(value: str) -> str:
@@ -235,7 +258,8 @@ def _check_npm_integrity(archive_path: Path, dist: dict, label: str) -> None:
         actual = hashlib.sha1(data).hexdigest()  # noqa: S324 - old packages only have sha1
         expected, algorithm = dist["shasum"], "shasum"
     else:
-        return
+        # The registry always publishes at least a sha1: no digest at all is an anomaly.
+        raise FetchError(f"No integrity digest published for {label}: refusing an unverifiable archive")
     if actual != expected:
         raise FetchError(f"Integrity failure for {label}: {algorithm} does not match the registry")
 
@@ -254,10 +278,15 @@ def fetch_pypi(name: str, version: str | None, workdir: Path) -> FetchedPackage:
     if not releases:
         raise FetchError(f"No downloadable release for {name}=={resolved_version}")
 
-    # Prefer the sdist (.tar.gz): it holds the full source code, including
-    # potentially malicious setup.py scripts. Fallback: wheel (.whl, a zip).
-    sdist = next((r for r in releases if r["packagetype"] == "sdist"), None)
-    chosen = sdist or releases[0]
+    # Prefer the sdist (.tar.gz/.zip): it holds the full source code, including
+    # potentially malicious setup.py scripts. Fallback: a wheel (.whl, a zip),
+    # never another legacy format (.egg, .exe, .tar.bz2) that cannot be unpacked.
+    supported = (".tar.gz", ".tgz", ".zip", ".whl")
+    candidates = [r for r in releases if str(r.get("filename", "")).endswith(supported)]
+    chosen = (next((r for r in candidates if r.get("packagetype") == "sdist"), None)
+              or next((r for r in candidates if r.get("packagetype") == "bdist_wheel"), None))
+    if chosen is None:
+        raise FetchError(f"No sdist or wheel in a supported format for {name}=={resolved_version}")
 
     file_url = chosen["url"]
     expected_sha256 = chosen.get("digests", {}).get("sha256")

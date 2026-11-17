@@ -34,7 +34,11 @@ requires dynamic proof (ADR-0007), and the two-witness detonation model
 - the home-made sample was verified to raise **no** GuardDog static signature yet
   to be caught at detonation;
 - the false-positive rate of the static rule was **measured** on 18 popular
-  packages, which is what motivated ADR-0007.
+  packages, which is what motivated ADR-0007; the measurement is a committed
+  script with its report (`airlock/corpus/run_popular.py`);
+- a full project review (2026-11-17, Claude Code) found and fixed ten defects (one of them, a Falco rule gap, only revealed by the first detonation run with the sensor alive),
+  each now covered by a regression test (see `docs/justification-des-choix.md`,
+  section 9).
 
 ## Data protection
 

@@ -50,8 +50,8 @@ def test_sink_does_not_merge_two_different_base_domains():
     """Chunks must reassemble per domain, not across unrelated queries."""
     hexa = f"token={CANARY}".encode().hex()
     log = "\n".join([
-        _dns_line(f"{hexa[:20]}.one.example.invalid"),
-        _dns_line(f"{hexa[20:]}.two.example.invalid"),
+        _dns_line(f"{hexa[:20]}.one-example.invalid"),
+        _dns_line(f"{hexa[20:]}.two-example.invalid"),
     ])
     findings, _ = analyse_sink_log(log, CANARY)
     assert findings == []
@@ -197,3 +197,74 @@ def test_corpus_runner_never_counts_an_untrusted_run_as_benign():
         == "unavailable"
     sink_hit = DetonationFinding("sink", "canary_exfiltrated", "Critical", "tcp")
     assert classify(DetonationResult(scan_failed=True, findings=[sink_hit])) == "malicious"
+
+
+# --- Regressions found in review (2026-11-17) --------------------------------
+
+def test_sink_reassembles_several_chunks_per_dns_query():
+    """`<chunk1>.<chunk2>.domain`: the first label alone does not hold the canary."""
+    hexa = f"token={CANARY}".encode().hex()
+    chunks = [hexa[i:i + 20] for i in range(0, len(hexa), 20)]
+    pairs = [".".join(chunks[i:i + 2]) for i in range(0, len(chunks), 2)]
+    findings, _ = analyse_sink_log("\n".join(_dns_line(f"{p}.evil.invalid") for p in pairs), CANARY)
+    assert [f.rule for f in findings] == ["canary_exfiltrated"]
+
+
+def test_sink_finds_one_canary_once_per_domain():
+    """Both reassembly strategies can see the same leak: report it once."""
+    hexa = f"token={CANARY}".encode().hex()
+    log = "\n".join(_dns_line(f"{hexa[i:i + 20]}.evil.invalid") for i in range(0, len(hexa), 20))
+    assert len(analyse_sink_log(log, CANARY)[0]) == 1
+
+
+def test_sink_finds_compressed_canary():
+    import gzip
+    import zlib
+    for body in (gzip.compress(f"k={CANARY}".encode()), zlib.compress(f"k={CANARY}".encode())):
+        findings, _ = analyse_sink_log(_tcp_line(b"POST / HTTP/1.1\r\n\r\n" + body), CANARY)
+        assert findings, body[:2]
+
+
+def test_sink_checks_malformed_dns_packets_for_the_canary():
+    line = json.dumps({"kind": "dns_malformed", "data": base64.b64encode(CANARY.encode()).decode()})
+    assert analyse_sink_log(line, CANARY)[0]
+
+
+def _sink_module():
+    import importlib.util
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[2] / "sandbox" / "sink.py"
+    spec = importlib.util.spec_from_file_location("airlock_sink", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_sink_dns_parser_rejects_malformed_packets_without_crashing():
+    """A truncated question used to raise struct.error and kill the DNS thread."""
+    sink = _sink_module()
+    header = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+    for packet in (header + b"\x00", header + b"\x05ab", header + b"\xc0\x0c\x00\x00\x01\x00\x01", b""):
+        try:
+            sink.dns_reply(packet, b"\x0a\x00\x00\x02")
+        except sink.MalformedQuery:
+            pass
+    query = header + b"\x03foo\x07invalid\x00\x00\x01\x00\x01"
+    reply = sink.dns_reply(query, b"\x0a\x00\x00\x02")
+    assert reply.endswith(b"\x0a\x00\x00\x02") and sink.dns_name(query)[0] == "foo.invalid"
+
+
+def test_falco_events_are_ordered_by_time_not_by_file_position(tmp_path, monkeypatch):
+    """A harness event flushed late by another CPU must still count as before the sentinel."""
+    def line(rule, time):
+        return json.dumps({"rule": rule, "priority": "Critical", "output": "x", "time": time,
+                           "output_fields": {"container.id": "abc123def456"}})
+    events = tmp_path / "events.jsonl"
+    events.write_text("\n".join([
+        line(sandbox.SENTINEL_RULE, "2026-11-17T08:00:00.000000200Z"),
+        line("airlock_persistence_write", "2026-11-17T08:00:00.000000100Z"),  # harness, late
+        line("airlock_decoy_secret_read", "2026-11-17T08:00:00.000000300Z"),
+    ]) + "\n")
+    monkeypatch.setattr(sandbox, "FALCO_EVENTS", events)
+    kept = sandbox._read_falco_events(0, "abc123def456" + "0" * 52)
+    assert [e["rule"] for e in kept] == [sandbox.SENTINEL_RULE, "airlock_decoy_secret_read"]

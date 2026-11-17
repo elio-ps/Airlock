@@ -75,7 +75,7 @@ stages, never better: a BLOCK is never cancelled by a good deps.dev score.
 | — | nothing suspicious | ALLOW |
 
 Only a behaviour **observed at detonation** can BLOCK (ADR-0007): static
-patterns are noisy (measured: 6 of 18 popular packages trigger a `threat-*`
+patterns are noisy (measured: 7 of 18 popular packages trigger a `threat-*`
 rule, see ADR-0007), so on their own they quarantine for human review.
 
 ## Corpora and evaluation
@@ -90,6 +90,10 @@ Two corpora, measured as test sets (false positives / negatives):
   (needs the sandbox image and, for the file-only samples, the Falco sensor).
   Includes the brief's required home-made sample, caught dynamically without a
   static signature.
+- **popular packages** (`corpus/run_popular.py`, 18 real packages): the
+  false-positive rate of the static rule that motivated ADR-0007. Run
+  `python3 -m airlock.corpus.run_popular` (network). Last result: 7 of 18
+  flagged, see `corpus/popular_eval_report.json`.
 
 ## Tests
 

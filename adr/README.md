@@ -17,3 +17,4 @@ already made in the code.
 | [0008](0008-undetonated-hook-quarantine.md) | Install-time code that was not detonated is quarantined | accepted |
 | [0009](0009-detonation-sandbox-design.md) | Detonation sandbox: rootless containers, a network sink and Falco | accepted |
 | [0010](0010-falco-ebpf-least-privilege.md) | Falco as a least-privilege eBPF sensor | accepted |
+| [0011](0011-partial-cve-coverage-is-not-clean.md) | Partial CVE coverage is unavailable, not clean | accepted |

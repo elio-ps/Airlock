@@ -154,7 +154,7 @@ def test_aggregate_allow_when_all_clean():
 
 
 def test_aggregate_quarantine_on_guarddog_threat():
-    """A static pattern alone is not a proof: 6 of 18 popular packages trigger one."""
+    """A static pattern alone is not a proof: 7 of 18 popular packages trigger one."""
     threat = type("F", (), {"rule_name": "threat-network-exfiltration"})()
     verdict = aggregate(
         package_name="evil-pkg", version="1.0.0", ecosystem="npm",
@@ -294,3 +294,53 @@ def test_sbom_failure_is_reported_as_unavailable():
                         skipped={"trivy", "guarddog", "depsdev", "detonation"})
     assert {s.name: s.status for s in verdict.stages}["sbom"] == StageStatus.UNAVAILABLE
     assert verdict.verdict == Verdict.QUARANTINE
+
+
+# --- Regressions found in review (2026-11-17) --------------------------------
+
+def test_trivy_without_resolved_dependencies_is_partial_not_clean():
+    """No purl on the dependencies: Trivy's silence about them proves nothing."""
+    verdict = aggregate(package_name="p", version="1", ecosystem="npm",
+                        trivy_result=_FakeTrivyResult([]), unresolved_dependencies=3)
+    trivy = next(s for s in verdict.stages if s.name == "trivy")
+    assert trivy.status == StageStatus.UNAVAILABLE and "3 declared" in trivy.detail
+    assert verdict.verdict == Verdict.ALLOW  # fail-open by default (ADR-0005)
+    closed = aggregate(package_name="p", version="1", ecosystem="npm",
+                       trivy_result=_FakeTrivyResult([]), unresolved_dependencies=3,
+                       policy=Policy(fail_closed=True))
+    assert closed.verdict == Verdict.QUARANTINE
+
+
+def test_trivy_severe_cve_still_quarantines_with_partial_coverage():
+    verdict = aggregate(package_name="p", version="1", ecosystem="npm",
+                        trivy_result=_FakeTrivyResult([_FakeFinding("CVE-1", "p", "CRITICAL")]),
+                        unresolved_dependencies=3)
+    assert verdict.verdict == Verdict.QUARANTINE
+
+
+def test_unknown_dependent_count_is_not_reported_as_zero():
+    result = type("D", (), {"scan_failed": False, "package_unknown": False,
+                            "scorecard_score": 1.0, "dependent_count": None})()
+    verdict = aggregate(package_name="p", version="1", ecosystem="npm", depsdev_result=result)
+    assert verdict.verdict == Verdict.QUARANTINE
+    assert "unknown" in verdict.reasons[0] and "0 dependents" not in verdict.reasons[0]
+
+
+@pytest.mark.parametrize("content", [
+    '{"quarantine_on_cve_severity": "HIGH"}',      # string instead of a list
+    '{"fail_closed": "yes"}',                      # string instead of a boolean
+    '{"quarantine_on_scorecard_below": true}',     # boolean instead of a number
+    '["fail_closed"]',                             # not an object
+])
+def test_policy_file_with_mistyped_value_is_refused(tmp_path, content):
+    path = tmp_path / "policy.json"
+    path.write_text(content)
+    with pytest.raises(ValueError):
+        Policy.from_file(path)
+
+
+def test_policy_file_lists_become_tuples(tmp_path):
+    path = tmp_path / "policy.json"
+    path.write_text('{"quarantine_on_cve_severity": ["CRITICAL"], "fail_closed": true}')
+    policy = Policy.from_file(path)
+    assert policy.quarantine_on_cve_severity == ("CRITICAL",) and policy.fail_closed

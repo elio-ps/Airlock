@@ -63,10 +63,37 @@ class Policy:
     def from_file(cls, path: Path) -> "Policy":
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            return cls(**data)
+            if not isinstance(data, dict):
+                raise TypeError("the policy must be a JSON object")
+            return cls(**{key: _checked_policy_value(key, value) for key, value in data.items()})
         except (OSError, json.JSONDecodeError, TypeError) as e:
-            # TypeError: an unknown or misspelt key, which must not be silently ignored.
+            # TypeError: an unknown, misspelt or mistyped key, never silently ignored.
             raise ValueError(f"invalid policy file {path}: {e}") from e
+
+
+def _checked_policy_value(key: str, value):
+    """
+    Check one policy value against the type of its default. A string where a
+    list is expected would otherwise "work" through substring matching
+    ("HIGH" in "HIGHEST"), which is exactly the silent drift to avoid.
+    """
+    defaults = {name: getattr(Policy, name) for name in Policy.__dataclass_fields__}
+    if key not in defaults:
+        raise TypeError(f"unknown policy key {key!r}")
+    default = defaults[key]
+    if isinstance(default, bool):
+        if not isinstance(value, bool):
+            raise TypeError(f"{key} must be true or false")
+        return value
+    if isinstance(default, (int, float)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(f"{key} must be a number")
+        return value
+    if isinstance(default, tuple):
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise TypeError(f"{key} must be a list of strings")
+        return tuple(value)
+    return value
 
 
 @dataclass
@@ -123,12 +150,13 @@ def aggregate(
     policy: Policy | None = None,
     skipped: frozenset[str] | set[str] = frozenset(),
     install_hooks: list[str] | None = None,
+    unresolved_dependencies: int = 0,
 ) -> PackageVerdict:
     """Judge each stage on its own, then keep the worst verdict and every reason."""
     policy = policy or Policy()
     judgements = [
         _judge_sbom(sbom_path, sbom_error),
-        _judge_trivy(trivy_result, policy, "trivy" in skipped),
+        _judge_trivy(trivy_result, policy, "trivy" in skipped, unresolved_dependencies),
         _judge_guarddog(guarddog_result, policy, "guarddog" in skipped),
         _judge_depsdev(depsdev_result, policy, "depsdev" in skipped),
         _judge_detonation(detonation_result, policy, "detonation" in skipped),
@@ -164,13 +192,20 @@ def _judge_sbom(sbom_path: Path | None, sbom_error: str | None) -> Judgement:
     return Judgement(None)
 
 
-def _judge_trivy(result, policy: Policy, skipped: bool) -> Judgement:
+def _judge_trivy(result, policy: Policy, skipped: bool, unresolved: int = 0) -> Judgement:
     if result is None:
         return Judgement(_not_run("trivy", skipped))
     if result.scan_failed:
         return Judgement(_failed("trivy", result.error_message))
 
     severe = [f for f in result.findings if f.severity in policy.quarantine_on_cve_severity]
+    if not severe and unresolved:
+        # Dependencies without an exact version carry no purl: Trivy cannot match
+        # them, so "no CVE" only covers the package itself (ADR-0011).
+        return Judgement(StageSummary(
+            "trivy", StageStatus.UNAVAILABLE,
+            f"partial coverage: {len(result.findings)} CVE(s) on the package itself, "
+            f"{unresolved} declared dependenc(y/ies) not scanned (no resolved versions)"))
     if not severe:
         return Judgement(StageSummary(
             "trivy", StageStatus.OK, f"{len(result.findings)} CVE(s) found, none severe"))
@@ -221,24 +256,26 @@ def _judge_depsdev(result, policy: Policy, skipped: bool) -> Judgement:
                          ["deps.dev: package unknown, possibly published very recently"])
 
     score = result.scorecard_score
-    dependents = result.dependent_count or 0
+    dependents = result.dependent_count
     # A low score only matters on a little-used package: a popular one with a low
-    # score is worth reporting, not quarantining blindly.
+    # score is worth reporting, not quarantining blindly. An unknown count is
+    # treated as "little-used" (prudent), but said as unknown, not as 0.
     weak_hygiene = (
         score is not None
         and score < policy.quarantine_on_scorecard_below
-        and dependents < policy.quarantine_on_scorecard_below_dependents
+        and (dependents or 0) < policy.quarantine_on_scorecard_below_dependents
     )
     if not weak_hygiene:
         detail = f"OpenSSF Scorecard score {score}/10" if score is not None else "score not available"
         return Judgement(StageSummary("deps.dev", StageStatus.OK, detail))
 
+    usage = (f"{dependents} direct dependents" if dependents is not None
+             else "dependent count unknown, treated as little-used")
     return Judgement(
         StageSummary("deps.dev", StageStatus.SUSPECT,
-                     f"low OpenSSF Scorecard score ({score}/10) for a little-used package "
-                     f"({dependents} direct dependents)"),
+                     f"low OpenSSF Scorecard score ({score}/10) for a little-used package ({usage})"),
         Verdict.QUARANTINE,
-        [f"deps.dev: weak project hygiene (Scorecard {score}/10, {dependents} dependents)"],
+        [f"deps.dev: weak project hygiene (Scorecard {score}/10, {usage})"],
     )
 
 

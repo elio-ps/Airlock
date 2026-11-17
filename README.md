@@ -25,7 +25,7 @@ malware by dynamic analysis, without a signature.
 | [`airlock/`](airlock/README.md) | the pipeline (ingestion → verdict), tests, corpora |
 | [`sandbox/`](sandbox/README.md) | the detonation sandbox: image, network sink, Falco sensor |
 | [`adr/`](adr/README.md) | architecture decision records — every significant choice, argued |
-| [`docs/`](docs/) | architecture dossier, risk analysis, Day 2 operations, AI-usage log |
+| [`docs/`](docs/) | architecture dossier, risk analysis, Day 2 operations, AI-usage log, design rationale in French ([`justification-des-choix.md`](docs/justification-des-choix.md)) |
 | [`fixtures/`](fixtures/) | small npm fixtures used by the unit tests |
 
 ## Quick start
@@ -47,7 +47,8 @@ Falco sensor: [`sandbox/README.md`](sandbox/README.md).
 The brief's milestone-1 deliverables ("analyse à la main"):
 
 - [x] Put an npm/PyPI package through the wringer: SBOM, Trivy, GuardDog, deps.dev
-- [x] Detonation in a disposable sandbox (Falco: network + files)
+- [x] Detonation in a disposable sandbox (Falco: network + files) — measured with
+  the sensor alive: TP=6, FN=0, TN=6, FP=0 (`airlock/corpus/detonation_eval_report.json`)
 - [x] Frozen corpus: 10 malicious + 10 benign, verdict documented
 - [x] A home-made, original malware in a postinstall (caught dynamically)
 - [x] Deliverable: judgement method + reference corpus

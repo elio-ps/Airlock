@@ -1,23 +1,37 @@
 {
-  "sensor_alive_for_all": false,
+  "sensor_alive_for_all": true,
   "confusion_matrix": {
-    "true_positives": 4,
-    "false_negatives": 2,
+    "true_positives": 6,
+    "false_negatives": 0,
     "true_negatives": 6,
-    "false_positives": 0
+    "false_positives": 0,
+    "unavailable": 0
   },
   "metrics": {
-    "accuracy": 0.8333333333333334,
+    "accuracy": 1.0,
     "precision": 1.0,
-    "recall": 0.6666666666666666
+    "recall": 1.0
   },
   "samples": [
     {
       "sample": "m01-npm-env-http",
       "ecosystem": "npm",
       "predicted": "malicious",
-      "sensor_alive": false,
+      "sensor_alive": true,
+      "incomplete_phases": [],
       "findings": [
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:09:44.969217223+0000: Warning outbound connection (dest=10.253.66.2 port=53 proc=node cmd=node payload.js container=73f06aa58b70) container_id=73f06aa58b70 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:09:44.974029091+0000: Warning outbound connection (dest=10.253.66.2 port=80 proc=node cmd=node payload.js container=73f06aa58b70) container_id=73f06aa58b70 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
         {
           "source": "sink",
           "rule": "canary_exfiltrated",
@@ -29,8 +43,8 @@
         "telemetry.airlock-sim.invalid",
         "telemetry.airlock-sim.invalid"
       ],
-      "duration_seconds": 3.9,
-      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "duration_seconds": 5.7,
+      "error_message": null,
       "expected": "malicious",
       "correct": true
     },
@@ -38,8 +52,27 @@
       "sample": "m02-npm-npmrc-read",
       "ecosystem": "npm",
       "predicted": "malicious",
-      "sensor_alive": false,
+      "sensor_alive": true,
+      "incomplete_phases": [],
       "findings": [
+        {
+          "source": "falco",
+          "rule": "airlock_decoy_secret_read",
+          "priority": "Critical",
+          "detail": "2026-11-17T09:09:50.222949314+0000: Critical decoy secret read (file=/home/dev/.npmrc proc=node cmd=node payload.js parent=sh container=a048fbc0982a) container_id=a048fbc0982a container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:09:50.241777987+0000: Warning outbound connection (dest=10.253.66.2 port=53 proc=node cmd=node payload.js container=a048fbc0982a) container_id=a048fbc0982a container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:09:50.246466320+0000: Warning outbound connection (dest=10.253.66.2 port=8080 proc=node cmd=node payload.js container=a048fbc0982a) container_id=a048fbc0982a container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
         {
           "source": "sink",
           "rule": "canary_exfiltrated",
@@ -51,41 +84,94 @@
         "telemetry.airlock-sim.invalid",
         "telemetry.airlock-sim.invalid"
       ],
-      "duration_seconds": 3.9,
-      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "duration_seconds": 5.7,
+      "error_message": null,
       "expected": "malicious",
       "correct": true
     },
     {
       "sample": "m03-npm-persistence",
       "ecosystem": "npm",
-      "predicted": "benign",
-      "sensor_alive": false,
-      "findings": [],
+      "predicted": "malicious",
+      "sensor_alive": true,
+      "incomplete_phases": [],
+      "findings": [
+        {
+          "source": "falco",
+          "rule": "airlock_persistence_write",
+          "priority": "Critical",
+          "detail": "2026-11-17T09:09:56.130407869+0000: Critical persistence write (file=/home/dev/.bashrc proc=node cmd=node payload.js container=5e35f17b8054) container_id=5e35f17b8054 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        }
+      ],
       "dns_queries": [],
-      "duration_seconds": 3.8,
-      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "duration_seconds": 5.6,
+      "error_message": null,
       "expected": "malicious",
-      "correct": false
+      "correct": true
     },
     {
       "sample": "m04-npm-dropper",
       "ecosystem": "npm",
-      "predicted": "benign",
-      "sensor_alive": false,
-      "findings": [],
+      "predicted": "malicious",
+      "sensor_alive": true,
+      "incomplete_phases": [],
+      "findings": [
+        {
+          "source": "falco",
+          "rule": "airlock_exec_from_writable_dir",
+          "priority": "Critical",
+          "detail": "2026-11-17T09:10:01.974082741+0000: Critical dropped program executed (exe=/usr/bin/dash cmd=.cache-update /tmp/.cache-update parent=node container=82fd32f95924) container_id=82fd32f95924 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        }
+      ],
       "dns_queries": [],
-      "duration_seconds": 3.9,
-      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "duration_seconds": 5.6,
+      "error_message": null,
       "expected": "malicious",
-      "correct": false
+      "correct": true
     },
     {
       "sample": "m05-pypi-setup-exfil",
       "ecosystem": "pypi",
       "predicted": "malicious",
-      "sensor_alive": false,
+      "sensor_alive": true,
+      "incomplete_phases": [],
       "findings": [
+        {
+          "source": "falco",
+          "rule": "airlock_decoy_secret_read",
+          "priority": "Critical",
+          "detail": "2026-11-17T09:10:07.879216528+0000: Critical decoy secret read (file=/home/dev/.aws/credentials proc=python3 cmd=python3 -c \nexec(compile('''\n# This is <pip-setuptools-caller> -- a caller that pip uses to run setup.py\n#\n# - It imports setuptools before invoking setup.py, to enable projects that dire"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:10:07.883609517+0000: Warning outbound connection (dest=10.253.66.2 port=53 proc=python3 cmd=python3 -c \nexec(compile('''\n# This is <pip-setuptools-caller> -- a caller that pip uses to run setup.py\n#\n# - It imports setuptools before invoking setup.py, to enable projects that directly\n#"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:10:07.884757195+0000: Warning outbound connection (dest=10.253.66.2 port=80 proc=python3 cmd=python3 -c \nexec(compile('''\n# This is <pip-setuptools-caller> -- a caller that pip uses to run setup.py\n#\n# - It imports setuptools before invoking setup.py, to enable projects that directly\n#"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_decoy_secret_read",
+          "priority": "Critical",
+          "detail": "2026-11-17T09:10:08.408741451+0000: Critical decoy secret read (file=/home/dev/.aws/credentials proc=python3 cmd=python3 -u -c \nexec(compile('''\n# This is <pip-setuptools-caller> -- a caller that pip uses to run setup.py\n#\n# - It imports setuptools before invoking setup.py, to enable projects that d"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:10:08.412674034+0000: Warning outbound connection (dest=10.253.66.2 port=53 proc=python3 cmd=python3 -u -c \nexec(compile('''\n# This is <pip-setuptools-caller> -- a caller that pip uses to run setup.py\n#\n# - It imports setuptools before invoking setup.py, to enable projects that directl"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:10:08.413427445+0000: Warning outbound connection (dest=10.253.66.2 port=80 proc=python3 cmd=python3 -u -c \nexec(compile('''\n# This is <pip-setuptools-caller> -- a caller that pip uses to run setup.py\n#\n# - It imports setuptools before invoking setup.py, to enable projects that directl"
+        },
         {
           "source": "sink",
           "rule": "canary_exfiltrated",
@@ -105,8 +191,8 @@
         "pkg-stats.airlock-sim.invalid",
         "pkg-stats.airlock-sim.invalid"
       ],
-      "duration_seconds": 4.4,
-      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "duration_seconds": 6.9,
+      "error_message": null,
       "expected": "malicious",
       "correct": true
     },
@@ -114,33 +200,142 @@
       "sample": "m06-npm-prebuild-grabber",
       "ecosystem": "npm",
       "predicted": "malicious",
-      "sensor_alive": false,
+      "sensor_alive": true,
+      "incomplete_phases": [],
       "findings": [
+        {
+          "source": "falco",
+          "rule": "airlock_decoy_secret_read",
+          "priority": "Critical",
+          "detail": "2026-11-17T09:10:14.452441770+0000: Critical decoy secret read (file=/home/dev/.npmrc proc=node cmd=node lib/prebuild.js parent=sh container=abffabab5d00) container_id=abffabab5d00 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:10:14.453856644+0000: Warning outbound connection (dest=10.253.66.2 port=53 proc=node cmd=node lib/prebuild.js container=abffabab5d00) container_id=abffabab5d00 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:10:14.455044054+0000: Warning outbound connection (dest=10.253.66.2 port=53 proc=node cmd=node lib/prebuild.js container=abffabab5d00) container_id=abffabab5d00 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:10:14.455450510+0000: Warning outbound connection (dest=10.253.66.2 port=53 proc=node cmd=node lib/prebuild.js container=abffabab5d00) container_id=abffabab5d00 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_decoy_secret_read",
+          "priority": "Critical",
+          "detail": "2026-11-17T09:10:14.455851852+0000: Critical decoy secret read (file=/home/dev/.pypirc proc=node cmd=node lib/prebuild.js parent=sh container=abffabab5d00) container_id=abffabab5d00 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:10:14.456147880+0000: Warning outbound connection (dest=10.253.66.2 port=53 proc=node cmd=node lib/prebuild.js container=abffabab5d00) container_id=abffabab5d00 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:10:14.456530269+0000: Warning outbound connection (dest=10.253.66.2 port=53 proc=node cmd=node lib/prebuild.js container=abffabab5d00) container_id=abffabab5d00 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:10:14.457158185+0000: Warning outbound connection (dest=10.253.66.2 port=53 proc=node cmd=node lib/prebuild.js container=abffabab5d00) container_id=abffabab5d00 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_decoy_secret_read",
+          "priority": "Critical",
+          "detail": "2026-11-17T09:10:14.457501458+0000: Critical decoy secret read (file=/home/dev/.git-credentials proc=node cmd=node lib/prebuild.js parent=sh container=abffabab5d00) container_id=abffabab5d00 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<N"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:10:14.457788942+0000: Warning outbound connection (dest=10.253.66.2 port=53 proc=node cmd=node lib/prebuild.js container=abffabab5d00) container_id=abffabab5d00 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:10:14.458084344+0000: Warning outbound connection (dest=10.253.66.2 port=53 proc=node cmd=node lib/prebuild.js container=abffabab5d00) container_id=abffabab5d00 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:10:14.458394581+0000: Warning outbound connection (dest=10.253.66.2 port=53 proc=node cmd=node lib/prebuild.js container=abffabab5d00) container_id=abffabab5d00 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_decoy_secret_read",
+          "priority": "Critical",
+          "detail": "2026-11-17T09:10:14.458767319+0000: Critical decoy secret read (file=/home/dev/.aws/credentials proc=node cmd=node lib/prebuild.js parent=sh container=abffabab5d00) container_id=abffabab5d00 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<N"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:10:14.459046244+0000: Warning outbound connection (dest=10.253.66.2 port=53 proc=node cmd=node lib/prebuild.js container=abffabab5d00) container_id=abffabab5d00 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:10:14.459343822+0000: Warning outbound connection (dest=10.253.66.2 port=53 proc=node cmd=node lib/prebuild.js container=abffabab5d00) container_id=abffabab5d00 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:10:14.459637101+0000: Warning outbound connection (dest=10.253.66.2 port=53 proc=node cmd=node lib/prebuild.js container=abffabab5d00) container_id=abffabab5d00 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:10:14.459958767+0000: Warning outbound connection (dest=10.253.66.2 port=53 proc=node cmd=node lib/prebuild.js container=abffabab5d00) container_id=abffabab5d00 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
+        {
+          "source": "falco",
+          "rule": "airlock_outbound_connection",
+          "priority": "Warning",
+          "detail": "2026-11-17T09:10:14.460169273+0000: Warning outbound connection (dest=10.253.66.2 port=53 proc=node cmd=node lib/prebuild.js container=abffabab5d00) container_id=abffabab5d00 container_name=<NA> container_image_repository=<NA> container_image_tag=<NA> k8s_pod_name=<NA> k8s_ns_name=<NA>"
+        },
         {
           "source": "sink",
           "rule": "canary_exfiltrated",
           "priority": "Critical",
-          "detail": "canary token sent over DNS to prebuilds.airlock-sim.invalid (14 queries)"
+          "detail": "canary token sent over DNS to airlock-sim.invalid (14 queries)"
         }
       ],
       "dns_queries": [
         "2f2f72656769737472792e6e706d6a732e6f72672f3a5f6175746854.prebuilds.airlock-sim.invalid",
-        "6f6b656e3d6e706d5f4149524c4f434b43414e415259623334316232.prebuilds.airlock-sim.invalid",
-        "3466366363353265366364373733396131320a.prebuilds.airlock-sim.invalid",
+        "6f6b656e3d6e706d5f4149524c4f434b43414e415259306162396564.prebuilds.airlock-sim.invalid",
+        "6161613334656638633131393765383832340a.prebuilds.airlock-sim.invalid",
         "5b707970695d0a757365726e616d65203d205f5f746f6b656e5f5f0a.prebuilds.airlock-sim.invalid",
         "70617373776f7264203d20707970692d4149524c4f434b43414e4152.prebuilds.airlock-sim.invalid",
-        "596233343162323466366363353265366364373733396131320a.prebuilds.airlock-sim.invalid",
-        "68747470733a2f2f6465763a4149524c4f434b43414e415259623334.prebuilds.airlock-sim.invalid",
-        "31623234663663633532653663643737333961313240676974687562.prebuilds.airlock-sim.invalid",
+        "593061623965646161613334656638633131393765383832340a.prebuilds.airlock-sim.invalid",
+        "68747470733a2f2f6465763a4149524c4f434b43414e415259306162.prebuilds.airlock-sim.invalid",
+        "39656461616133346566386331313937653838323440676974687562.prebuilds.airlock-sim.invalid",
         "2e636f6d0a.prebuilds.airlock-sim.invalid",
         "5b64656661756c745d0a6177735f6163636573735f6b65795f696420.prebuilds.airlock-sim.invalid",
-        "3d20414b49414149524c4f434b43414e415259623334316232346636.prebuilds.airlock-sim.invalid",
-        "6363353265366364373733396131320a6177735f7365637265745f61.prebuilds.airlock-sim.invalid",
-        "63636573735f6b6579203d204149524c4f434b43414e415259623334.prebuilds.airlock-sim.invalid",
-        "3162323466366363353265366364373733396131320a.prebuilds.airlock-sim.invalid"
+        "3d20414b49414149524c4f434b43414e415259306162396564616161.prebuilds.airlock-sim.invalid",
+        "3334656638633131393765383832340a6177735f7365637265745f61.prebuilds.airlock-sim.invalid",
+        "63636573735f6b6579203d204149524c4f434b43414e415259306162.prebuilds.airlock-sim.invalid",
+        "3965646161613334656638633131393765383832340a.prebuilds.airlock-sim.invalid"
       ],
-      "duration_seconds": 3.8,
-      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "duration_seconds": 5.6,
+      "error_message": null,
       "expected": "malicious",
       "correct": true
     },
@@ -148,11 +343,12 @@
       "sample": "b01-npm-echo",
       "ecosystem": "npm",
       "predicted": "benign",
-      "sensor_alive": false,
+      "sensor_alive": true,
+      "incomplete_phases": [],
       "findings": [],
       "dns_queries": [],
-      "duration_seconds": 3.8,
-      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "duration_seconds": 5.6,
+      "error_message": null,
       "expected": "benign",
       "correct": true
     },
@@ -160,11 +356,12 @@
       "sample": "b02-npm-build-own-dir",
       "ecosystem": "npm",
       "predicted": "benign",
-      "sensor_alive": false,
+      "sensor_alive": true,
+      "incomplete_phases": [],
       "findings": [],
       "dns_queries": [],
-      "duration_seconds": 3.8,
-      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "duration_seconds": 5.6,
+      "error_message": null,
       "expected": "benign",
       "correct": true
     },
@@ -172,11 +369,12 @@
       "sample": "b03-npm-read-own-file",
       "ecosystem": "npm",
       "predicted": "benign",
-      "sensor_alive": false,
+      "sensor_alive": true,
+      "incomplete_phases": [],
       "findings": [],
       "dns_queries": [],
-      "duration_seconds": 3.8,
-      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "duration_seconds": 5.6,
+      "error_message": null,
       "expected": "benign",
       "correct": true
     },
@@ -184,11 +382,12 @@
       "sample": "b04-pypi-setup-normal",
       "ecosystem": "pypi",
       "predicted": "benign",
-      "sensor_alive": false,
+      "sensor_alive": true,
+      "incomplete_phases": [],
       "findings": [],
       "dns_queries": [],
-      "duration_seconds": 4.3,
-      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "duration_seconds": 6.8,
+      "error_message": null,
       "expected": "benign",
       "correct": true
     },
@@ -196,11 +395,12 @@
       "sample": "b05-npm-pure-lib",
       "ecosystem": "npm",
       "predicted": "benign",
-      "sensor_alive": false,
+      "sensor_alive": true,
+      "incomplete_phases": [],
       "findings": [],
       "dns_queries": [],
-      "duration_seconds": 3.9,
-      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "duration_seconds": 5.6,
+      "error_message": null,
       "expected": "benign",
       "correct": true
     },
@@ -208,11 +408,12 @@
       "sample": "b06-npm-loopback",
       "ecosystem": "npm",
       "predicted": "benign",
-      "sensor_alive": false,
+      "sensor_alive": true,
+      "incomplete_phases": [],
       "findings": [],
       "dns_queries": [],
-      "duration_seconds": 3.8,
-      "error_message": "Falco did not see the sentinel: the sensor is blind or stopped",
+      "duration_seconds": 5.6,
+      "error_message": null,
       "expected": "benign",
       "correct": true
     }

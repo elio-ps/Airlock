@@ -14,7 +14,8 @@ import struct
 import sys
 import threading
 
-TCP_PORTS = (80, 443, 4444, 8080, 8443)
+# 53: DNS over TCP, which some resolvers fall back to and exfiltration can use.
+TCP_PORTS = (53, 80, 443, 4444, 8080, 8443)
 MAX_BYTES = 256 * 1024
 HTTP_OK = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
 LOCK = threading.Lock()
@@ -25,14 +26,42 @@ def emit(**record) -> None:
         print(json.dumps(record), flush=True)
 
 
+class MalformedQuery(ValueError):
+    """A DNS packet that cannot be parsed as a single question."""
+
+
 def dns_name(packet: bytes) -> tuple[str, int]:
-    """Decode the first question name; return it with the offset following it."""
+    """
+    Decode the first question name; return it with the offset following it.
+
+    The packet comes from the code under analysis: any malformation raises
+    MalformedQuery, never anything that could stop the DNS server.
+    """
     labels, offset = [], 12
-    while packet[offset]:
-        length = packet[offset]
-        labels.append(packet[offset + 1:offset + 1 + length].decode("ascii", "replace"))
-        offset += length + 1
-    return ".".join(labels), offset + 5  # null byte + QTYPE + QCLASS
+    try:
+        while packet[offset]:
+            length = packet[offset]
+            if length > 63:  # compression pointer or reserved bits: not a plain question
+                raise MalformedQuery(f"unexpected label length {length}")
+            labels.append(packet[offset + 1:offset + 1 + length].decode("ascii", "replace"))
+            offset += length + 1
+    except IndexError as e:
+        raise MalformedQuery("name runs past the end of the packet") from e
+    end = offset + 5  # null byte + QTYPE + QCLASS
+    if len(packet) < end:
+        raise MalformedQuery("question has no QTYPE/QCLASS")
+    return ".".join(labels), end
+
+
+def dns_reply(packet: bytes, address: bytes) -> bytes:
+    """Answer an A query with our own address; any other type gets an empty answer."""
+    name, end = dns_name(packet)
+    qtype = struct.unpack(">H", packet[end - 4:end - 2])[0]
+    answers = 1 if qtype == 1 else 0
+    reply = packet[:2] + b"\x81\x80" + packet[4:6] + struct.pack(">HHH", answers, 0, 0) + packet[12:end]
+    if answers:
+        reply += b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04" + address
+    return reply
 
 
 def serve_dns(own_ip: str) -> None:
@@ -41,17 +70,16 @@ def serve_dns(own_ip: str) -> None:
     address = socket.inet_aton(own_ip)
     while True:
         packet, peer = server.recvfrom(4096)
+        # Nothing the analysed code sends may kill this loop: a dead DNS server
+        # would silently blind the sink to every later DNS exfiltration.
         try:
-            name, end = dns_name(packet)
-        except IndexError:
-            continue
-        emit(kind="dns", name=name, peer=peer[0])
-        qtype = struct.unpack(">H", packet[end - 4:end - 2])[0]
-        answers = 1 if qtype == 1 else 0  # A records only; AAAA gets an empty answer
-        reply = packet[:2] + b"\x81\x80" + packet[4:6] + struct.pack(">HHH", answers, 0, 0) + packet[12:end]
-        if answers:
-            reply += b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04" + address
-        server.sendto(reply, peer)
+            name, _ = dns_name(packet)
+            emit(kind="dns", name=name, peer=peer[0])
+            server.sendto(dns_reply(packet, address), peer)
+        except MalformedQuery:
+            emit(kind="dns_malformed", peer=peer[0], data=base64.b64encode(packet[:512]).decode())
+        except Exception as error:  # noqa: BLE001 - keep serving whatever happens
+            emit(kind="sink_error", where="dns", error=repr(error)[:200])
 
 
 class Handler(socketserver.BaseRequestHandler):

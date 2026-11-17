@@ -54,6 +54,10 @@ across the DNS queries.
 
 ## Expected results
 
-With Falco running: TP=6, FN=0, TN=6, FP=0. Without Falco, the two file-only
+With Falco running: TP=6, FN=0, TN=6, FP=0 — measured on 2026-11-17, sensor
+alive for all 12 runs (`../detonation_eval_report.json`). The first such run gave
+TP=5: m04 drops a *script*, which the kernel runs as `/bin/sh <script>`, and the
+dropper rule only looked at the executable path; the rule now also checks the
+interpreter's first argument. Without Falco, the two file-only
 samples (m03, m04) cannot be seen and show as false negatives; the report sets
 `sensor_alive_for_all: false` so this is never mistaken for a clean pass.

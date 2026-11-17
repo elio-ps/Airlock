@@ -25,4 +25,5 @@ file.
 + Thresholds can change without touching the logic.
 − Less fine-grained than a score: two weak signals do not add up.
 − The dependents rule relies on the `dependent_count` field, read from the
-  deps.dev `v3alpha` API (checked on real responses). A missing value counts as 0.
+  deps.dev `v3alpha` API (checked on real responses). A missing value is treated like a
+  little-used package (prudent), and the reason says "unknown", not "0".

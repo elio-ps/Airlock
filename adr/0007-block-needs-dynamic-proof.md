@@ -21,6 +21,14 @@ Measured on: requests, flask, django, pyyaml, boto3, pytest, cryptography,
 pillow, express, lodash, axios, react, esbuild, core-js, typescript, webpack,
 sharp, husky.
 
+### Re-measurement (2026-11-17)
+The measurement is now a script, `python3 -m airlock.corpus.run_popular`, and
+its output is committed (`airlock/corpus/popular_eval_report.json`). Re-run on
+the same 18 packages (pinned versions as above, latest for the others):
+**7 of 18** trigger a `threat-*` rule. The extra one is pytest (latest,
+`threat-process-download-exec`); boto3, cryptography and every npm package
+except webpack stay clean. The conclusion is unchanged, and stronger.
+
 ## Options
 1. Keep `threat-*` = BLOCK: 6 of 18 wrongly blocked.
 2. BLOCK only for rules of high severity and high specificity: 3 of 18 still

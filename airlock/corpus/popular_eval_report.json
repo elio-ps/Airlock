@@ -1,0 +1,156 @@
+{
+  "measured_at": "2026-11-17T09:03:48.057375+00:00",
+  "measured": 18,
+  "flagged_by_a_threat_rule": 7,
+  "unavailable": 0,
+  "packages": [
+    {
+      "ecosystem": "pypi",
+      "name": "requests",
+      "version": "2.31.0",
+      "status": "flagged",
+      "threat_rules": [
+        "threat-filesystem-read",
+        "threat-process-hooks"
+      ]
+    },
+    {
+      "ecosystem": "pypi",
+      "name": "flask",
+      "version": "3.0.3",
+      "status": "flagged",
+      "threat_rules": [
+        "threat-filesystem-read"
+      ]
+    },
+    {
+      "ecosystem": "pypi",
+      "name": "django",
+      "version": "5.0.6",
+      "status": "flagged",
+      "threat_rules": [
+        "threat-filesystem-read",
+        "threat-network-exfiltration",
+        "threat-runtime-dynamic-loader",
+        "threat-runtime-environment-read",
+        "threat-runtime-obfuscation-steganography",
+        "threat-runtime-obfuscation-unicode"
+      ]
+    },
+    {
+      "ecosystem": "pypi",
+      "name": "pyyaml",
+      "version": "6.0.1",
+      "status": "flagged",
+      "threat_rules": [
+        "threat-runtime-dynamic-loader"
+      ]
+    },
+    {
+      "ecosystem": "pypi",
+      "name": "boto3",
+      "version": "1.44.4",
+      "status": "clean",
+      "threat_rules": []
+    },
+    {
+      "ecosystem": "pypi",
+      "name": "pytest",
+      "version": "9.2.0",
+      "status": "flagged",
+      "threat_rules": [
+        "threat-process-download-exec"
+      ]
+    },
+    {
+      "ecosystem": "pypi",
+      "name": "cryptography",
+      "version": "50.0.2",
+      "status": "clean",
+      "threat_rules": []
+    },
+    {
+      "ecosystem": "pypi",
+      "name": "pillow",
+      "version": "10.3.0",
+      "status": "flagged",
+      "threat_rules": [
+        "threat-process-download-exec",
+        "threat-runtime-obfuscation-steganography",
+        "threat-runtime-screencapture"
+      ]
+    },
+    {
+      "ecosystem": "npm",
+      "name": "express",
+      "version": "5.3.0",
+      "status": "clean",
+      "threat_rules": []
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lodash",
+      "version": "4.18.1",
+      "status": "clean",
+      "threat_rules": []
+    },
+    {
+      "ecosystem": "npm",
+      "name": "axios",
+      "version": "1.21.1",
+      "status": "clean",
+      "threat_rules": []
+    },
+    {
+      "ecosystem": "npm",
+      "name": "react",
+      "version": "19.3.1",
+      "status": "clean",
+      "threat_rules": []
+    },
+    {
+      "ecosystem": "npm",
+      "name": "esbuild",
+      "version": "0.28.2",
+      "status": "clean",
+      "threat_rules": []
+    },
+    {
+      "ecosystem": "npm",
+      "name": "core-js",
+      "version": "3.51.0",
+      "status": "clean",
+      "threat_rules": []
+    },
+    {
+      "ecosystem": "npm",
+      "name": "typescript",
+      "version": "7.0.2",
+      "status": "clean",
+      "threat_rules": []
+    },
+    {
+      "ecosystem": "npm",
+      "name": "webpack",
+      "version": "5.91.0",
+      "status": "flagged",
+      "threat_rules": [
+        "threat-filesystem-read"
+      ]
+    },
+    {
+      "ecosystem": "npm",
+      "name": "sharp",
+      "version": "0.35.5",
+      "status": "clean",
+      "threat_rules": []
+    },
+    {
+      "ecosystem": "npm",
+      "name": "husky",
+      "version": "9.1.7",
+      "status": "clean",
+      "threat_rules": []
+    }
+  ]
+}

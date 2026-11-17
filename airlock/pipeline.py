@@ -30,7 +30,7 @@ from airlock.detonation import sandbox
 from airlock.ingest.fetch import (
     FetchedPackage, FetchError, fetch_local, fetch_package, safe_slug,
 )
-from airlock.sbom.generate import generate_sbom_file
+from airlock.sbom.generate import declared_dependencies, generate_sbom_file
 from airlock.verdict.aggregate import Policy, aggregate
 
 WORKDIR_ROOT = Path("./airlock_runs")
@@ -72,9 +72,9 @@ def run_pipeline(
         run_dir = WORKDIR_ROOT / f"{pkg.ecosystem}-{safe_slug(pkg.name)}-{safe_slug(pkg.version)}"
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        sbom_path, sbom_error = None, None
+        sbom_path, sbom_error, unresolved = None, None, 0
         if "sbom" not in skip:
-            sbom_path, sbom_error = _run_sbom(pkg, run_dir, skip, log)
+            sbom_path, sbom_error, unresolved = _run_sbom(pkg, run_dir, skip, log)
         # Trivy reads the SBOM: without one it has nothing to scan.
         trivy_result = None
         if "trivy" not in skip and sbom_path is not None:
@@ -90,6 +90,7 @@ def run_pipeline(
             depsdev_result=depsdev_result, detonation_result=detonation_result,
             sbom_path=sbom_path, sbom_error=sbom_error, policy=policy,
             skipped=skip, install_hooks=pkg.install_hooks,
+            unresolved_dependencies=unresolved,
         )
         log(f"  -> VERDICT: {verdict.verdict.value.upper()}")
 
@@ -127,22 +128,28 @@ def _ingest(ecosystem, name, version, local_archive, workdir, log) -> FetchedPac
     return pkg
 
 
-def _run_sbom(pkg, run_dir, skip, log) -> tuple[Path | None, str | None]:
-    """Return (SBOM path, None) on success, (None, error) on failure."""
+def _run_sbom(pkg, run_dir, skip, log) -> tuple[Path | None, str | None, int]:
+    """
+    Return (SBOM path, None, unresolved) on success, (None, error, 0) on failure.
+    `unresolved` counts declared dependencies without an exact version: Trivy
+    cannot match them against CVEs, so its silence about them means nothing.
+    """
     log("Generating the CycloneDX SBOM...")
     resolved = None
     if pkg.origin == "registry" and "depsdev" not in skip:
         resolved = depsdev.resolved_dependencies(pkg.ecosystem, pkg.name, pkg.version)
-    if resolved is None:
-        log("  -> dependency graph unavailable: declared ranges only, CVE coverage is partial")
     try:
+        unresolved = 0 if resolved is not None else len(declared_dependencies(pkg))
         sbom_path = generate_sbom_file(pkg, run_dir / "sbom", resolved)
     except Exception as e:  # untrusted metadata must not crash the whole pipeline
         error = f"{type(e).__name__}: {e}"
         log(f"  -> unavailable: {error[:150]}")
-        return None, error
+        return None, error, 0
+    if unresolved:
+        log(f"  -> dependency graph unavailable: {unresolved} declared dependenc(y/ies) "
+            "without an exact version, invisible to the CVE scan")
     log(f"  -> {sbom_path}")
-    return sbom_path, None
+    return sbom_path, None, unresolved
 
 
 def _run_trivy(sbom_path, timeout, log):

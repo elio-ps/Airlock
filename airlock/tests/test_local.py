@@ -180,3 +180,47 @@ def test_safe_slug_neutralises_path_separators():
 def _mkdir(path: Path) -> Path:
     path.mkdir()
     return path
+
+
+# --- Regressions found in review (2026-11-17) --------------------------------
+
+def test_pyproject_only_sdist_is_install_time_code(tmp_path):
+    """Building an sdist runs its backend and hooks, even without a setup.py."""
+    root = tmp_path / "demo-1.0"
+    root.mkdir()
+    (root / "pyproject.toml").write_text(
+        '[build-system]\nrequires = []\nbuild-backend = "backend"\nbackend-path = ["."]\n')
+    hooks = fetch._pypi_install_hooks(tmp_path)
+    assert len(hooks) == 1 and "in-tree backend" in hooks[0]
+
+
+def test_wheel_has_no_install_time_code(tmp_path):
+    (tmp_path / "demo").mkdir()
+    (tmp_path / "demo" / "__init__.py").write_text("")
+    assert fetch._pypi_install_hooks(tmp_path) == []
+
+
+def test_npm_archive_without_any_digest_is_refused(tmp_path):
+    archive = tmp_path / "a.tgz"
+    archive.write_bytes(b"x")
+    with pytest.raises(FetchError):
+        fetch._check_npm_integrity(archive, {}, "x@1")
+
+
+def test_local_package_with_dependencies_reports_partial_cve_coverage(tmp_path, monkeypatch):
+    """Local packages never get a resolved graph: Trivy must not read as clean."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "package.json").write_text(
+        '{"name": "dep-user", "version": "1.0.0", "dependencies": {"lodash": "^4.17.0"}}')
+    archive = tmp_path / "dep-user-1.0.0.tgz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(src / "package.json", arcname="package/package.json")
+    monkeypatch.setattr(pipeline, "WORKDIR_ROOT", tmp_path / "runs")
+    fake = type("T", (), {"findings": [], "scan_failed": False, "error_message": None,
+                          "to_dict": lambda self: {}})()
+    monkeypatch.setattr(pipeline.trivy_scan, "scan_sbom", lambda *a, **k: fake)
+    report = pipeline.run_pipeline("npm", skip={"guarddog", "detonation"}, verbose=False,
+                                   local_archive=archive)
+    trivy = next(s for s in report["verdict"]["stages"] if s["name"] == "trivy")
+    assert trivy["status"] == "unavailable" and "1 declared" in trivy["detail"]
